@@ -1,0 +1,148 @@
+"""基于 JSON 文件的插件数据存储。"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from astrbot.api import logger
+
+PLUGIN_DIR_NAME = "ZM-QQManager"
+
+
+def get_data_dir() -> Path:
+    """返回本插件的数据目录，必要时创建。"""
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+        base = Path(get_astrbot_data_path())
+    except Exception:  # 兜底：AstrBot 版本较旧时退回相对路径
+        base = Path("data")
+
+    path = base / "plugin_data" / PLUGIN_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class JsonStore:
+    """一个 JSON 文件对应一类数据，写入走临时文件 + 原子替换。"""
+
+    def __init__(self, filename: str):
+        self.path = get_data_dir() / filename
+        self._data: Dict[str, Any] = {}
+        self._lock = asyncio.Lock()
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                self._data = loaded
+        except Exception as exc:
+            logger.error(f"[ZM-QQManager] 读取 {self.path.name} 失败: {exc}")
+
+    def _write(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(self._data, handle, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as exc:
+            logger.error(f"[ZM-QQManager] 写入 {self.path.name} 失败: {exc}")
+
+    async def save(self) -> None:
+        """把当前内容落盘。"""
+        async with self._lock:
+            await asyncio.to_thread(self._write)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        return self._data.pop(key, default)
+
+    def group(self, group_id: str) -> Dict[str, Any]:
+        """取某个群的配置字典，不存在则创建。"""
+        bucket = self._data.get(group_id)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self._data[group_id] = bucket
+        return bucket
+
+    @property
+    def data(self) -> Dict[str, Any]:
+        return self._data
+
+    def keys(self):
+        return self._data.keys()
+
+    def items(self):
+        return self._data.items()
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+
+class GroupToggle:
+    """按群保存"开关 + 时长"这类小状态。"""
+
+    def __init__(self, store: JsonStore, name: str):
+        self.store = store
+        self.name = name
+
+    def state(self, group_id: str) -> Dict[str, Any]:
+        bucket = self.store.group(str(group_id))
+        state = bucket.get(self.name)
+        if not isinstance(state, dict):
+            state = {"enabled": False}
+            bucket[self.name] = state
+        return state
+
+    def is_enabled(self, group_id: str) -> bool:
+        return bool(self.state(group_id).get("enabled"))
+
+    async def enable(self, group_id: str, **extra: Any) -> None:
+        state = self.state(group_id)
+        state["enabled"] = True
+        state.update(extra)
+        await self.store.save()
+
+    async def disable(self, group_id: str) -> None:
+        state = self.state(group_id)
+        state["enabled"] = False
+        await self.store.save()
+
+    def value(self, group_id: str, key: str, default: Any = None) -> Any:
+        return self.state(group_id).get(key, default)
+
+
+def coerce_int(value: Any, default: int) -> int:
+    """把配置项转成 int，非法值回退默认。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def coerce_str_list(value: Any) -> list:
+    """把配置项转成字符串列表，兼容换行分隔的文本。"""
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
+    return []
+
+
+def optional_str(value: Any) -> Optional[str]:
+    text = str(value).strip() if value is not None else ""
+    return text or None

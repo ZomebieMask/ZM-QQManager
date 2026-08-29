@@ -1,5 +1,57 @@
 # 更新日志
 
+## [1.0.1] - 2026-08-29
+
+### ✨ 新增功能
+
+**禁言增强**
+- `/mutelist` - 查看本群禁言列表，显示每人剩余禁言时长
+- `/muteall [时长]` - 全体禁言，支持 秒/分/时/天，不带参数默认永久
+- `/muteall off` - 解除全体禁言
+
+**敏感词系统**
+- `/sw on [时长]` / `/sw off` - 按群开关，时长默认单位为分钟
+- 修改时长需先 `/sw off` 再 `/sw on <新时长>`
+- `/sw add <文本>` / `/sw del <文本>` - 管理自定义词（全称 `/sensitive-words`）
+- `/sw mode custom|library|both` - 三种词源：仅自定义词、远程词库、混合
+- `/sw list` / `/sw reload` - 查看词库状态、重新拉取远程词库
+- 命中后自动撤回并禁言，支持白名单修正误伤
+
+**刷屏检测**
+- `/antiflood on|off` - 按群开关
+- 滑动窗口条数判定 + 连续重复内容判定，阈值均可在后台配置
+
+**群名片检测**
+- `/cardcheck on|off` - 检测群名片中的广告与敏感内容
+- 处理方式可配置：warn / reset / mute / kick
+
+**文件仓库**
+- `/file upload <name> <时长>` - 上传后随即发送文件即可入库
+- `/file download <name>` - 获取限时临时下载链接
+- `/file log <name> [次数]` - 以合并转发形式查看最近更新记录
+- `/file log update <name> <版本> <说明>` - 记录版本与更新内容
+- `/file list` / `/file delete <name>`
+
+**其他**
+- `/merge <标题> <QQ> <内容> [<QQ> <内容> ...]` - 构造合并转发消息
+- `/kill <成员> <理由>` - 赛博击杀，向共同群同步播报，模板后台可改
+- `/zmhelp` - 命令总览
+
+### 🔧 变更
+
+- 管理类命令统一限制为 AstrBot 管理员可用
+- `/file download`、`/file list`、`/file log`（查看）对全体群成员开放，
+  `/file upload`、`/file delete`、`/file log update` 仍限管理员
+- 补全 `_conf_schema.json` 中缺失的 `ad_threshold`、`ad_mute_duration`、`ad_tip`
+- 代码拆分为 `core/` 子模块：配置存储、时长解析、检测器、敏感词、文件仓库、下载服务
+
+### ⚠️ 注意
+
+- 内置下载服务不做身份校验，凭一次签发的限时令牌访问。
+  公网暴露前请确认 `file_host` / `file_port` 的可访问范围。
+
+---
+
 ## [1.0.0] - 2026-08-29
 
 ### 首次发布

@@ -1,727 +1,1818 @@
-"""
-ZM-QQManager - 功能强大的 QQ 群管理插件
+"""ZM-QQManager - 功能强大的 QQ 群管理插件
+
 作者: ZM
+所有管理命令均限制为 AstrBot 管理员可用。
 """
-import re
+from __future__ import annotations
+
+import asyncio
 import time
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-from astrbot.api.event import AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, register
-from astrbot.api.star.star_handler import star_receiver
-from astrbot.api import logger
+from typing import List, Optional
+
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, register
+
+from .core.detector import CardCache, FloodDetector, ad_score
+from .core.files import FileRepository, format_size
+from .core.mutes import MuteTracker
+from .core.onebot import OneBotApi, forward_node, resolve_member_name
+from .core.sensitive import (
+    MODE_BOTH,
+    MODE_CUSTOM,
+    MODE_LABELS,
+    MODE_LIBRARY,
+    VALID_MODES,
+    SensitiveWordEngine,
+)
+from .core.server import DownloadServer
+from .core.store import GroupToggle, JsonStore, coerce_int
+from .core.utils import (
+    MAX_DURATION,
+    extract_targets,
+    format_duration,
+    parse_duration,
+    truncate,
+)
+
+ADMIN_ONLY = "此命令仅群聊可用"
+QQ_ONLY = "此功能仅支持 QQ (aiocqhttp) 平台"
+
+# /file 的写操作仅管理员可用；download/list/log 查看对全体成员开放。
+ADMIN_FILE_ACTIONS = {"upload", "delete", "del", "rm"}
+
+_MASK_48 = (1 << 48) - 1
+_JAVA_MULTIPLIER = 0x5DEECE66D
 
 
-@register("ZM-QQManager", "ZM", "1.0.0")
-class ZMQQManager:
-    """ZM-QQManager 群管理插件"""
+def _find_slime_chunks(seed: int, search_range: int) -> List[tuple]:
+    """按 Java 版算法在 ±search_range 区块内查找史莱姆区块。"""
+    found = []
+    for x in range(-search_range, search_range):
+        for z in range(-search_range, search_range):
+            chunk_seed = (
+                seed
+                + x * x * 0x4C1906
+                + x * 0x5AC0DB
+                + z * z * 0x4307A7
+                + z * 0x5F24F
+            ) ^ 0x3AD8025F
+            state = (chunk_seed ^ _JAVA_MULTIPLIER) & _MASK_48
+            # java.util.Random.nextInt(10)
+            for _ in range(2):
+                state = (state * _JAVA_MULTIPLIER + 0xB) & _MASK_48
+                candidate = state >> 17
+                if candidate - (candidate % 10) + 9 <= _MASK_48 >> 17:
+                    break
+            if candidate % 10 == 0:
+                found.append((x, z))
+    return found
 
-    def __init__(self, context: Context):
-        self.context = context
-        self.db = context.kv_db  # KV 数据库
-        self.message_history: Dict[str, List[Dict]] = {}  # 消息历史记录
-        self.max_history_per_group = 100  # 每个群最多保存的消息数
 
-        # 广告检测关键词配置
-        self.ad_keywords = {
-            # 广告短语 (权重: 3)
-            'phrases': [
-                '加微信', '加QQ', '加群', '进群', '私聊', '联系方式',
-                '代理', '招代理', '诚招', '兼职', '赚钱', '日入',
-                '月入', '收益', '盈利', '稳赚', '零投资', '高回报',
-                '包教包会', '一对一', '免费领', '限时优惠', '打折',
-                '低价', '便宜', '清仓', '促销', '秒杀'
-            ],
-            # 联系方式模式 (权重: 4)
-            'contact_patterns': [
-                r'[vVwW][xX][:：]?\s*[a-zA-Z0-9_-]{5,}',  # vx: xxxxx
-                r'[qQ]{1,2}[:：]?\s*[0-9]{5,}',  # qq: 12345
-                r'微信[:：]?\s*[a-zA-Z0-9_-]{5,}',
-            ],
-            # 手机号 (权重: 3)
-            'phone_pattern': r'1[3-9]\d{9}',
-            # 外链 (权重: 2)
-            'url_pattern': r'https?://[^\s]+',
-            # 促销词汇 (权重: 2)
-            'promo_words': ['优惠', '折扣', '特价', '限时', '抢购', '包邮']
+@register("ZM-QQManager", "ZM", "功能全面的 QQ 群管理插件", "1.0.1",
+          "https://github.com/ZomebieMask/ZM-QQManager")
+class ZMQQManager(Star):
+    """群管理插件主体。"""
+
+    def __init__(self, context: Context, config: AstrBotConfig = None):
+        super().__init__(context)
+        self.config = config or {}
+
+        self.settings = JsonStore("settings.json")
+        self.words_store = JsonStore("sensitive_words.json")
+        self.mutes_store = JsonStore("mutes.json")
+        self.files_store = JsonStore("files.json")
+
+        self.sensitive = SensitiveWordEngine(self.words_store, self.config)
+        self.mutes = MuteTracker(self.mutes_store)
+        self.files = FileRepository(self.files_store, self.config)
+        self.cards = CardCache()
+
+        self.flood = FloodDetector(
+            threshold=coerce_int(self.config.get("flood_threshold"), 5),
+            window=coerce_int(self.config.get("flood_window"), 10),
+            repeat_limit=coerce_int(self.config.get("flood_repeat_limit"), 3),
+        )
+
+        self.flood_toggle = GroupToggle(self.settings, "flood")
+        self.sw_toggle = GroupToggle(self.settings, "sensitive")
+        self.adban_toggle = GroupToggle(self.settings, "adban")
+        self.card_toggle = GroupToggle(self.settings, "card")
+
+        self.server: Optional[DownloadServer] = None
+        self._pending_upload = {}
+        self._message_history = {}
+        self._max_history = 200
+
+    async def initialize(self):
+        """插件加载后启动文件下载服务。"""
+        if self.config.get("file_server_enabled", True):
+            self.server = DownloadServer(
+                self.files,
+                host=str(self.config.get("file_host") or "0.0.0.0"),
+                port=coerce_int(self.config.get("file_port"), 9977),
+            )
+            error = await self.server.start()
+            if error:
+                logger.warning(f"[ZM-QQManager] {error}")
+        logger.info("[ZM-QQManager] 插件已加载 v1.0.1")
+
+    async def terminate(self):
+        """插件卸载时释放端口并落盘。"""
+        if self.server is not None:
+            await self.server.stop()
+            self.server = None
+        for store in (self.settings, self.words_store, self.mutes_store, self.files_store):
+            await store.save()
+        logger.info("[ZM-QQManager] 插件已卸载")
+
+    # ------------------------------------------------------------------
+    # 通用辅助
+    # ------------------------------------------------------------------
+
+    def _render(self, template: str, event: AstrMessageEvent, **extra) -> str:
+        """渲染提示语模板中的占位符。"""
+        values = {
+            "at": f"[CQ:at,qq={event.get_sender_id()}]",
+            "name": event.get_sender_name() or str(event.get_sender_id()),
+            "user_id": str(event.get_sender_id()),
+            "group_id": str(event.get_group_id() or ""),
         }
-
-        logger.info("ZM-QQManager 插件已加载")
-
-    def _parse_time_duration(self, time_str: str) -> Optional[int]:
-        """
-        解析时间字符串，返回秒数
-        支持格式: 数字 + d/w/m/y (天/周/月/年)
-        """
-        if not time_str:
-            return None
-
-        match = re.match(r'(\d+)([dwmy])', time_str.lower())
-        if not match:
-            return None
-
-        value, unit = int(match.group(1)), match.group(2)
-
-        if unit == 'd':
-            return value * 86400  # 天
-        elif unit == 'w':
-            return value * 604800  # 周
-        elif unit == 'm':
-            return value * 2592000  # 月 (30天)
-        elif unit == 'y':
-            return value * 31536000  # 年 (365天)
-
-        return None
-
-    def _replace_placeholders(self, text: str, event: AstrMessageEvent) -> str:
-        """替换文本中的占位符"""
-        replacements = {
-            '{at}': f"[CQ:at,qq={event.message_obj.sender.user_id}]",
-            '{name}': event.message_obj.sender.nickname or str(event.message_obj.sender.user_id),
-            '{user_id}': str(event.message_obj.sender.user_id),
-            '{group_id}': str(event.message_obj.group_id) if event.message_obj.group_id else 'N/A'
-        }
-
-        for placeholder, value in replacements.items():
-            text = text.replace(placeholder, value)
-
+        values.update({k: str(v) for k, v in extra.items()})
+        text = template or ""
+        for key, value in values.items():
+            text = text.replace("{" + key + "}", value)
         return text
 
-    def _get_ban_list_key(self, group_id: str) -> str:
-        """获取封禁列表的键名"""
-        return f"zm_qqmanager_banlist_{group_id}"
+    def _require_group(self, event: AstrMessageEvent) -> Optional[str]:
+        group_id = event.get_group_id()
+        return str(group_id) if group_id else None
 
-    def _get_ad_key(self, group_id: str) -> str:
-        """获取广告配置的键名"""
-        return f"zm_qqmanager_ad_{group_id}"
+    def _args(self, event: AstrMessageEvent, command: str) -> List[str]:
+        """去掉命令前缀，返回参数列表。"""
+        text = (event.message_str or "").strip()
+        lowered = text.lower()
+        marker = command.lower()
+        index = lowered.find(marker)
+        if index >= 0:
+            text = text[index + len(marker):]
+        return text.split()
 
-    def _get_welcome_key(self, group_id: str) -> str:
-        """获取欢迎消息的键名"""
-        return f"zm_qqmanager_welcome_{group_id}"
+    def _raw_after(self, event: AstrMessageEvent, command: str) -> str:
+        """去掉命令前缀，返回剩余原始文本。"""
+        text = (event.message_str or "").strip()
+        lowered = text.lower()
+        marker = command.lower()
+        index = lowered.find(marker)
+        if index >= 0:
+            text = text[index + len(marker):]
+        return text.strip()
 
-    def _get_adban_key(self, group_id: str) -> str:
-        """获取广告拦截开关的键名"""
-        return f"zm_qqmanager_adban_{group_id}"
+    def _record_message(self, event: AstrMessageEvent) -> None:
+        group_id = self._require_group(event)
+        if not group_id:
+            return
+        history = self._message_history.setdefault(group_id, [])
+        history.append(
+            {
+                "message_id": event.message_obj.message_id,
+                "user_id": str(event.get_sender_id()),
+                "timestamp": time.time(),
+                "content": event.message_str,
+            }
+        )
+        if len(history) > self._max_history:
+            del history[: -self._max_history]
 
-    def _is_user_banned(self, group_id: str, user_id: str) -> bool:
-        """检查用户是否在封禁列表中"""
-        key = self._get_ban_list_key(group_id)
-        ban_list = self.db.get(key, [])
-        return user_id in ban_list
+    async def _punish(
+        self,
+        event: AstrMessageEvent,
+        api: OneBotApi,
+        group_id: str,
+        user_id: str,
+        duration: int,
+        reason: str,
+        recall: bool,
+    ) -> None:
+        """撤回 + 禁言的组合处理，用于自动检测场景。"""
+        if recall:
+            await api.try_call("delete_msg", message_id=event.message_obj.message_id)
+        if duration > 0:
+            try:
+                await api.mute(int(group_id), int(user_id), duration)
+                await self.mutes.record(group_id, user_id, duration, reason, "自动检测")
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 自动禁言失败: {exc}")
 
-    def _add_to_ban_list(self, group_id: str, user_id: str):
-        """添加用户到封禁列表"""
-        key = self._get_ban_list_key(group_id)
-        ban_list = self.db.get(key, [])
-        if user_id not in ban_list:
-            ban_list.append(user_id)
-            self.db.put(key, ban_list)
+    # ------------------------------------------------------------------
+    # 禁言相关命令
+    # ------------------------------------------------------------------
 
-    def _remove_from_ban_list(self, group_id: str, user_id: str):
-        """从封禁列表移除用户"""
-        key = self._get_ban_list_key(group_id)
-        ban_list = self.db.get(key, [])
-        if user_id in ban_list:
-            ban_list.remove(user_id)
-            self.db.put(key, ban_list)
-
-    def _extract_user_id(self, target: str) -> Optional[str]:
-        """从文本中提取用户 ID (支持 @、CQ码、纯数字)"""
-        # CQ:at,qq=123456
-        cq_match = re.search(r'\[CQ:at,qq=(\d+)\]', target)
-        if cq_match:
-            return cq_match.group(1)
-
-        # 纯数字
-        number_match = re.search(r'\d{5,}', target)
-        if number_match:
-            return number_match.group(0)
-
-        return None
-
-    def _record_message(self, event: AstrMessageEvent):
-        """记录消息到历史"""
-        if not event.message_obj.group_id:
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("mute")
+    async def cmd_mute(self, event: AstrMessageEvent):
+        """/mute <成员> [时长] - 禁言成员，默认 10 分钟"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
             return
 
-        group_id = str(event.message_obj.group_id)
-        if group_id not in self.message_history:
-            self.message_history[group_id] = []
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
 
-        # 添加消息记录
-        self.message_history[group_id].append({
-            'message_id': event.message_obj.message_id,
-            'user_id': event.message_obj.sender.user_id,
-            'timestamp': time.time(),
-            'content': event.message_str
-        })
+        raw = self._raw_after(event, "mute")
+        targets = extract_targets(event, raw)
+        if not targets:
+            yield event.plain_result("用法: /mute <成员> [时长]\n例: /mute @某人 10m、/mute 12345 1h")
+            return
 
-        # 限制历史记录数量
-        if len(self.message_history[group_id]) > self.max_history_per_group:
-            self.message_history[group_id] = self.message_history[group_id][-self.max_history_per_group:]
+        # 时长取最后一段不含目标 QQ 号的参数
+        duration = 600
+        parts = [p for p in raw.split() if p.strip()]
+        for part in reversed(parts):
+            if any(t in part for t in targets):
+                continue
+            parsed = parse_duration(part, default_unit="m")
+            if parsed is not None:
+                duration = min(parsed, MAX_DURATION)
+                break
 
-    def _calculate_ad_score(self, text: str) -> int:
-        """计算广告评分，返回总分"""
-        score = 0
-
-        # 检查广告短语 (权重: 3)
-        for phrase in self.ad_keywords['phrases']:
-            if phrase in text:
-                score += 3
-
-        # 检查联系方式模式 (权重: 4)
-        for pattern in self.ad_keywords['contact_patterns']:
-            if re.search(pattern, text):
-                score += 4
-
-        # 检查手机号 (权重: 3)
-        if re.search(self.ad_keywords['phone_pattern'], text):
-            score += 3
-
-        # 检查外链 (权重: 2)
-        if re.search(self.ad_keywords['url_pattern'], text):
-            score += 2
-
-        # 检查促销词汇 (权重: 2)
-        for word in self.ad_keywords['promo_words']:
-            if word in text:
-                score += 2
-
-        return score
-
-    async def _mute_user(self, event: AstrMessageEvent, user_id: str, duration: int) -> str:
-        """禁言用户"""
-        try:
-            # 调用 OneBot API 禁言
-            await event.context.adapter.call_api(
-                "set_group_ban",
-                group_id=event.message_obj.group_id,
-                user_id=int(user_id),
-                duration=duration
-            )
-            return f"已禁言用户 {user_id}，时长: {duration} 秒"
-        except Exception as e:
-            logger.error(f"禁言失败: {e}")
-            return f"禁言失败: {str(e)}"
-
-    async def _kick_user(self, event: AstrMessageEvent, user_id: str) -> str:
-        """踢出用户"""
-        try:
-            await event.context.adapter.call_api(
-                "set_group_kick",
-                group_id=event.message_obj.group_id,
-                user_id=int(user_id),
-                reject_add_request=False
-            )
-            return f"已踢出用户 {user_id}"
-        except Exception as e:
-            logger.error(f"踢出失败: {e}")
-            return f"踢出失败: {str(e)}"
-
-    async def _recall_message(self, event: AstrMessageEvent, message_id: int) -> bool:
-        """撤回消息"""
-        try:
-            await event.context.adapter.call_api(
-                "delete_msg",
-                message_id=message_id
-            )
-            return True
-        except Exception as e:
-            logger.error(f"撤回消息失败: {e}")
-            return False
-
-    async def _set_admin(self, event: AstrMessageEvent, user_id: str, enable: bool) -> str:
-        """设置管理员"""
-        try:
-            await event.context.adapter.call_api(
-                "set_group_admin",
-                group_id=event.message_obj.group_id,
-                user_id=int(user_id),
-                enable=enable
-            )
-            action = "设置" if enable else "取消"
-            return f"已{action}用户 {user_id} 的管理员权限"
-        except Exception as e:
-            logger.error(f"设置管理员失败: {e}")
-            return f"设置管理员失败: {str(e)}"
-
-    async def _set_title(self, event: AstrMessageEvent, user_id: str, title: str) -> str:
-        """设置群头衔"""
-        try:
-            await event.context.adapter.call_api(
-                "set_group_special_title",
-                group_id=event.message_obj.group_id,
-                user_id=int(user_id),
-                special_title=title,
-                duration=-1  # 永久
-            )
-            return f"已设置用户 {user_id} 的群头衔为: {title}"
-        except Exception as e:
-            logger.error(f"设置头衔失败: {e}")
-            return f"设置头衔失败: {str(e)}"
-
-    async def _get_group_member_list(self, event: AstrMessageEvent) -> List[Dict]:
-        """获取群成员列表"""
-        try:
-            result = await event.context.adapter.call_api(
-                "get_group_member_list",
-                group_id=event.message_obj.group_id
-            )
-            return result
-        except Exception as e:
-            logger.error(f"获取群成员列表失败: {e}")
-            return []
-
-    @star_receiver(command="mute")
-    async def handle_mute(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理禁言命令: /mute <成员> [时间]"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=2)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /mute <成员> [时间]\n时间格式: 数字+d/w/m/y (例: 30d, 1w)")
-
-        target = parts[1]
-        duration_str = parts[2] if len(parts) > 2 else "10m"
-
-        user_id = self._extract_user_id(target)
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户，请 @用户 或提供 QQ 号")
-
-        duration = self._parse_time_duration(duration_str)
-        if duration is None:
-            return MessageEventResult().message("时间格式错误，请使用: 数字+d/w/m/y (例: 30d)")
-
-        result = await self._mute_user(event, user_id, duration)
-        return MessageEventResult().message(result)
-
-    @star_receiver(command="kick")
-    async def handle_kick(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理踢人命令: /kick <成员> 或 /kick <时间>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /kick <成员> 或 /kick <时间> (清理不活跃)")
-
-        target = parts[1].strip()
-
-        # 检查是否是时间格式 (清理不活跃成员)
-        duration = self._parse_time_duration(target)
-        if duration:
-            # 清理不活跃成员
-            members = await self._get_group_member_list(event)
-            if not members:
-                return MessageEventResult().message("无法获取群成员列表")
-
-            current_time = int(time.time())
-            kicked_count = 0
-            inactive_threshold = current_time - duration
-
-            for member in members:
-                last_sent_time = member.get('last_sent_time', 0)
-                if last_sent_time < inactive_threshold:
-                    user_id = str(member['user_id'])
-                    await self._kick_user(event, user_id)
-                    kicked_count += 1
-                    await asyncio.sleep(0.5)  # 避免频繁操作
-
-            return MessageEventResult().message(f"已踢出 {kicked_count} 个不活跃成员")
-
-        # 踢出指定成员
-        user_id = self._extract_user_id(target)
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户，请 @用户、提供 QQ 号或时间格式")
-
-        result = await self._kick_user(event, user_id)
-        return MessageEventResult().message(result)
-
-    @star_receiver(command="ban")
-    async def handle_ban(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理封禁命令: /ban <成员>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /ban <成员>")
-
-        user_id = self._extract_user_id(parts[1])
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户")
-
-        # 添加到封禁列表
-        self._add_to_ban_list(str(event.message_obj.group_id), user_id)
-
-        # 踢出用户
-        result = await self._kick_user(event, user_id)
-        return MessageEventResult().message(f"{result}\n已加入封禁列表")
-
-    @star_receiver(command="unban")
-    async def handle_unban(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理解封命令: /unban <QQ号>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /unban <QQ号>")
-
-        user_id = self._extract_user_id(parts[1])
-        if not user_id:
-            return MessageEventResult().message("无法识别 QQ 号")
-
-        self._remove_from_ban_list(str(event.message_obj.group_id), user_id)
-        return MessageEventResult().message(f"已将 {user_id} 从封禁列表移除")
-
-    @star_receiver(command="recall")
-    async def handle_recall(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理撤回命令: /recall 或 /recall <数量>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        group_id = str(event.message_obj.group_id)
-        parts = event.message_str.split(maxsplit=1)
-
-        # 如果回复了消息，撤回被回复的消息
-        if hasattr(event.message_obj, 'reply') and event.message_obj.reply:
-            reply_msg_id = event.message_obj.reply.message_id
-            success = await self._recall_message(event, reply_msg_id)
-            return MessageEventResult().message("已撤回被回复的消息" if success else "撤回失败")
-
-        # 撤回最近的 N 条消息
-        count = 1
-        if len(parts) > 1:
+        succeeded, failed = [], []
+        for user_id in targets:
             try:
-                count = int(parts[1])
-            except ValueError:
-                return MessageEventResult().message("数量必须是数字")
-
-        if group_id not in self.message_history:
-            return MessageEventResult().message("暂无消息记录")
-
-        messages = self.message_history[group_id][-count:]
-        recalled = 0
-
-        for msg in reversed(messages):
-            if await self._recall_message(event, msg['message_id']):
-                recalled += 1
-
-        return MessageEventResult().message(f"已撤回 {recalled}/{count} 条消息")
-
-    @star_receiver(command="ad")
-    async def handle_ad(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理广告命令: /ad, /ad set <文本>, /ad clear, /ad reset"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        group_id = str(event.message_obj.group_id)
-        key = self._get_ad_key(group_id)
-        parts = event.message_str.split(maxsplit=2)
-
-        if len(parts) == 1:
-            # 发布广告
-            ad_data = self.db.get(key)
-            if not ad_data:
-                return MessageEventResult().message("本群尚未设置广告")
-            return MessageEventResult().message(ad_data.get('content', ''))
-
-        subcommand = parts[1].lower()
-
-        if subcommand == "set":
-            # 保存广告
-            if len(parts) < 3:
-                return MessageEventResult().message("用法: /ad set <文本>")
-            content = parts[2]
-            self.db.put(key, {'content': content, 'updated_at': time.time()})
-            return MessageEventResult().message("广告已保存")
-
-        elif subcommand == "clear":
-            # 清空广告
-            self.db.delete(key)
-            return MessageEventResult().message("广告已清空")
-
-        elif subcommand == "reset":
-            # 恢复默认广告
-            default_ad = "这是一条默认广告，请使用 /ad set 设置自定义广告"
-            self.db.put(key, {'content': default_ad, 'updated_at': time.time()})
-            return MessageEventResult().message("已恢复默认广告")
-
-        return MessageEventResult().message("未知子命令，可用: set, clear, reset")
-
-    @star_receiver(command="adban")
-    async def handle_adban(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理广告拦截命令: /adban, /adban on, /adban off"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        group_id = str(event.message_obj.group_id)
-        key = self._get_adban_key(group_id)
-        parts = event.message_str.split()
-
-        current_state = self.db.get(key, False)
-
-        if len(parts) == 1:
-            # 切换状态
-            new_state = not current_state
-            self.db.put(key, new_state)
-            return MessageEventResult().message(f"广告拦截已{'开启' if new_state else '关闭'}")
-
-        subcommand = parts[1].lower()
-        if subcommand == "on":
-            self.db.put(key, True)
-            return MessageEventResult().message("广告拦截已开启")
-        elif subcommand == "off":
-            self.db.put(key, False)
-            return MessageEventResult().message("广告拦截已关闭")
-
-        return MessageEventResult().message("用法: /adban, /adban on, /adban off")
-
-    @star_receiver(command="wel")
-    async def handle_welcome(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理欢迎消息命令"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        group_id = str(event.message_obj.group_id)
-        key = self._get_welcome_key(group_id)
-        parts = event.message_str.split(maxsplit=2)
-
-        if len(parts) == 1:
-            # 手动执行欢迎
-            welcome_data = self.db.get(key)
-            if not welcome_data or not welcome_data.get('enabled'):
-                return MessageEventResult().message("欢迎消息未启用")
-            content = self._replace_placeholders(welcome_data.get('content', ''), event)
-            return MessageEventResult().message(content)
-
-        subcommand = parts[1].lower()
-
-        if subcommand == "set":
-            if len(parts) < 3:
-                return MessageEventResult().message("用法: /wel set <文本>")
-            content = parts[2]
-            self.db.put(key, {'content': content, 'enabled': True})
-            return MessageEventResult().message("欢迎消息已保存并启用")
-
-        elif subcommand == "on":
-            welcome_data = self.db.get(key, {})
-            welcome_data['enabled'] = True
-            self.db.put(key, welcome_data)
-            return MessageEventResult().message("欢迎消息已启用")
-
-        elif subcommand == "off":
-            welcome_data = self.db.get(key, {})
-            welcome_data['enabled'] = False
-            self.db.put(key, welcome_data)
-            return MessageEventResult().message("欢迎消息已关闭")
-
-        elif subcommand == "reset":
-            default_welcome = "欢迎 {at} 加入本群！"
-            self.db.put(key, {'content': default_welcome, 'enabled': True})
-            return MessageEventResult().message("已恢复默认欢迎消息")
-
-        elif subcommand == "status":
-            welcome_data = self.db.get(key)
-            if not welcome_data:
-                return MessageEventResult().message("欢迎消息未配置")
-            enabled = welcome_data.get('enabled', False)
-            content = welcome_data.get('content', '')
-            return MessageEventResult().message(
-                f"状态: {'已启用' if enabled else '已关闭'}\n"
-                f"内容: {content}"
-            )
-
-        return MessageEventResult().message("可用子命令: set, on, off, reset, status")
-
-    @star_receiver(command="title")
-    async def handle_title(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理群头衔命令: /title @成员 文本 或 /title unset @成员"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=2)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /title @成员 <文本> 或 /title unset @成员")
-
-        if parts[1].lower() == "unset":
-            if len(parts) < 3:
-                return MessageEventResult().message("用法: /title unset @成员")
-            user_id = self._extract_user_id(parts[2])
-            if not user_id:
-                return MessageEventResult().message("无法识别目标用户")
-            result = await self._set_title(event, user_id, "")
-            return MessageEventResult().message(result)
-
-        if len(parts) < 3:
-            return MessageEventResult().message("用法: /title @成员 <文本>")
-
-        user_id = self._extract_user_id(parts[1])
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户")
-
-        title = self._replace_placeholders(parts[2], event)
-        result = await self._set_title(event, user_id, title)
-        return MessageEventResult().message(result)
-
-    @star_receiver(command="op")
-    async def handle_op(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理设置管理员命令: /op <成员>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /op <成员>")
-
-        user_id = self._extract_user_id(parts[1])
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户")
-
-        result = await self._set_admin(event, user_id, True)
-        return MessageEventResult().message(result)
-
-    @star_receiver(command="deop")
-    async def handle_deop(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理取消管理员命令: /deop <成员>"""
-        if not event.message_obj.group_id:
-            return MessageEventResult().message("此命令仅在群聊中可用")
-
-        parts = event.message_str.split(maxsplit=1)
-        if len(parts) < 2:
-            return MessageEventResult().message("用法: /deop <成员>")
-
-        user_id = self._extract_user_id(parts[1])
-        if not user_id:
-            return MessageEventResult().message("无法识别目标用户")
-
-        result = await self._set_admin(event, user_id, False)
-        return MessageEventResult().message(result)
-
-    @star_receiver(command="slimefinder")
-    async def handle_slimefinder(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理史莱姆区块查找命令: /slimefinder <version> <seed>"""
-        parts = event.message_str.split(maxsplit=2)
-        if len(parts) < 3:
-            return MessageEventResult().message(
-                "用法: /slimefinder <version> <seed>\n"
-                "示例: /slimefinder 1.20.1 12345678"
-            )
-
-        version = parts[1]
-        try:
-            seed = int(parts[2])
-        except ValueError:
-            return MessageEventResult().message("种子必须是整数")
-
-        # 简化的史莱姆区块计算 (基于 Java 版算法)
-        slime_chunks = []
-        search_range = 10  # 搜索范围 (区块)
-
-        for x in range(-search_range, search_range):
-            for z in range(-search_range, search_range):
-                # 史莱姆区块判定算法
-                chunk_seed = (
-                    seed +
-                    int(x * x * 0x4c1906) +
-                    int(x * 0x5ac0db) +
-                    int(z * z) * 0x4307a7 +
-                    int(z * 0x5f24f) ^ 0x3ad8025f
+                await api.mute(int(group_id), int(user_id), duration)
+                await self.mutes.record(
+                    group_id, user_id, duration, "管理员手动禁言", str(event.get_sender_id())
                 )
+                succeeded.append(user_id)
+            except RuntimeError as exc:
+                failed.append(f"{user_id}({exc})")
 
-                # 使用 Java Random 算法
-                chunk_seed = (chunk_seed ^ 0x5deece66d) & ((1 << 48) - 1)
-                random_value = (chunk_seed * 0x5deece66d + 0xb) & ((1 << 48) - 1)
-                random_value = (random_value >> 17) % 10
+        lines = []
+        if succeeded:
+            label = "解除禁言" if duration == 0 else f"禁言 {format_duration(duration)}"
+            lines.append(f"已对 {len(succeeded)} 名成员{label}: {', '.join(succeeded)}")
+        if failed:
+            lines.append(f"失败: {', '.join(failed)}")
+        yield event.plain_result("\n".join(lines))
 
-                if random_value == 0:
-                    slime_chunks.append((x, z))
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("unmute")
+    async def cmd_unmute(self, event: AstrMessageEvent):
+        """/unmute <成员> - 解除禁言"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
 
-        if not slime_chunks:
-            return MessageEventResult().message(f"在附近 {search_range} 区块内未找到史莱姆区块")
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
 
-        # 限制显示数量
-        display_chunks = slime_chunks[:10]
-        result = f"Minecraft {version} 种子 {seed} 的史莱姆区块:\n"
-        result += "\n".join([f"区块 ({x}, {z})" for x, z in display_chunks])
+        targets = extract_targets(event, self._raw_after(event, "unmute"))
+        if not targets:
+            yield event.plain_result("用法: /unmute <成员>")
+            return
 
-        if len(slime_chunks) > 10:
-            result += f"\n... 还有 {len(slime_chunks) - 10} 个区块"
+        succeeded, failed = [], []
+        for user_id in targets:
+            try:
+                await api.mute(int(group_id), int(user_id), 0)
+                await self.mutes.clear(group_id, user_id)
+                succeeded.append(user_id)
+            except RuntimeError as exc:
+                failed.append(f"{user_id}({exc})")
 
-        return MessageEventResult().message(result)
+        lines = []
+        if succeeded:
+            lines.append(f"已解除禁言: {', '.join(succeeded)}")
+        if failed:
+            lines.append(f"失败: {', '.join(failed)}")
+        yield event.plain_result("\n".join(lines))
 
-    @star_receiver(command="sf")
-    async def handle_sf(self, event: AstrMessageEvent) -> MessageEventResult:
-        """slimefinder 的缩写"""
-        return await self.handle_slimefinder(event)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("mutelist")
+    async def cmd_mutelist(self, event: AstrMessageEvent):
+        """/mutelist - 查看被禁言的成员及其剩余时长"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
 
-    @star_receiver()
-    async def handle_message(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理所有消息 (用于消息记录和广告检测)"""
-        # 记录消息
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        muted = await self.mutes.list_muted(api, group_id)
+        if not muted:
+            yield event.plain_result("当前没有被禁言的成员")
+            return
+
+        lines = [f"本群禁言列表（共 {len(muted)} 人）"]
+        for index, item in enumerate(muted, start=1):
+            remaining = format_duration(item["remaining"]) if item["remaining"] else "永久"
+            line = f"{index}. {item['name']}（{item['user_id']}）剩余 {remaining}"
+            if item.get("reason"):
+                line += f"\n   原因: {truncate(item['reason'], 40)}"
+            if item.get("operator"):
+                line += f" | 操作者: {item['operator']}"
+            lines.append(line)
+        yield event.plain_result("\n".join(lines))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("muteall")
+    async def cmd_muteall(self, event: AstrMessageEvent):
+        """/muteall [时长] - 全体禁言，默认永久；/muteall off 解除"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        args = self._args(event, "muteall")
+        first = args[0].lower() if args else ""
+
+        if first in {"off", "关闭", "解除", "cancel"}:
+            try:
+                await api.mute_all(int(group_id), False)
+            except RuntimeError as exc:
+                yield event.plain_result(f"解除全体禁言失败: {exc}")
+                return
+            state = self.settings.group(group_id)
+            state.pop("muteall_until", None)
+            await self.settings.save()
+            yield event.plain_result("已解除全体禁言")
+            return
+
+        duration = 0
+        if args:
+            parsed = parse_duration(args[0], default_unit="m")
+            if parsed is None:
+                yield event.plain_result(
+                    "时长格式错误。支持: 30s、10m、2h、1d，或省略表示永久\n例: /muteall 10m"
+                )
+                return
+            duration = min(parsed, MAX_DURATION)
+
+        try:
+            await api.mute_all(int(group_id), True)
+        except RuntimeError as exc:
+            yield event.plain_result(f"全体禁言失败: {exc}")
+            return
+
+        if duration <= 0:
+            yield event.plain_result("已开启全体禁言（永久），使用 /muteall off 解除")
+            return
+
+        state = self.settings.group(group_id)
+        state["muteall_until"] = int(time.time()) + duration
+        await self.settings.save()
+        asyncio.create_task(self._auto_unmute_all(event, group_id, duration))
+        yield event.plain_result(
+            f"已开启全体禁言 {format_duration(duration)}，到期后自动解除"
+        )
+
+    async def _auto_unmute_all(self, event: AstrMessageEvent, group_id: str, duration: int) -> None:
+        """全体禁言到期后自动解除。"""
+        await asyncio.sleep(duration)
+        state = self.settings.group(group_id)
+        until = state.get("muteall_until") or 0
+        # 期间被手动解除或重新设置了更晚的到期时间，就不再处理
+        if not until or until > int(time.time()) + 5:
+            return
+
+        api = OneBotApi(event)
+        try:
+            await api.mute_all(int(group_id), False)
+        except RuntimeError as exc:
+            logger.warning(f"[ZM-QQManager] 自动解除全体禁言失败: {exc}")
+            return
+
+        state.pop("muteall_until", None)
+        await self.settings.save()
+        await api.send_group_msg(int(group_id), "全体禁言已到期，自动解除")
+
+    # ------------------------------------------------------------------
+    # 敏感词系统
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("sensitive-words", alias={"sw"})
+    async def cmd_sensitive(self, event: AstrMessageEvent):
+        """敏感词系统: on/off/add/del/list/mode/reload/status"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        raw = self._raw_after(event, "sensitive-words")
+        if raw == (event.message_str or "").strip():
+            raw = self._raw_after(event, "sw")
+
+        parts = raw.split()
+        action = parts[0].lower() if parts else "status"
+        rest = raw[len(parts[0]):].strip() if parts else ""
+
+        if action == "on":
+            default_minutes = coerce_int(self.config.get("sensitive_default_duration"), 10)
+            if self.sw_toggle.is_enabled(group_id):
+                current = self.sw_toggle.value(group_id, "duration", default_minutes * 60)
+                yield event.plain_result(
+                    f"敏感词系统已处于开启状态，当前禁言时长 {format_duration(current)}\n"
+                    f"如需修改时长，请先 /sw off 再 /sw on <时长>"
+                )
+                return
+
+            duration = default_minutes * 60
+            if rest:
+                parsed = parse_duration(rest, default_unit="m")
+                if parsed is None:
+                    yield event.plain_result(
+                        "时长格式错误。默认单位为分钟\n例: /sw on 10（10分钟）、/sw on 2h"
+                    )
+                    return
+                duration = min(parsed, MAX_DURATION)
+
+            await self.sw_toggle.enable(group_id, duration=duration)
+            mode = self.sensitive.mode(group_id)
+            label = "永久" if duration == 0 else format_duration(duration)
+            yield event.plain_result(
+                f"敏感词系统已开启\n禁言时长: {label}\n"
+                f"词库模式: {MODE_LABELS[mode]}\n"
+                f"命中后将自动撤回消息并禁言"
+            )
+            return
+
+        if action == "off":
+            if not self.sw_toggle.is_enabled(group_id):
+                yield event.plain_result("敏感词系统当前已是关闭状态")
+                return
+            await self.sw_toggle.disable(group_id)
+            yield event.plain_result("敏感词系统已关闭。重新开启可使用 /sw on <时长> 设置新时长")
+            return
+
+        if action == "add":
+            if not rest:
+                yield event.plain_result("用法: /sw add <文本>")
+                return
+            ok, message = await self.sensitive.add_word(group_id, rest)
+            yield event.plain_result(message)
+            return
+
+        if action in {"del", "delete", "remove", "rm"}:
+            if not rest:
+                yield event.plain_result("用法: /sw del <文本>")
+                return
+            ok, message = await self.sensitive.remove_word(group_id, rest)
+            yield event.plain_result(message)
+            return
+
+        if action == "list":
+            words = self.sensitive.custom_words(group_id)
+            if not words:
+                yield event.plain_result("自定义敏感词库为空，可用 /sw add <文本> 添加")
+                return
+            listing = "\n".join(f"{i}. {w}" for i, w in enumerate(words, start=1))
+            yield event.plain_result(f"自定义敏感词（共 {len(words)} 条）\n{listing}")
+            return
+
+        if action == "mode":
+            target = rest.lower()
+            if target not in VALID_MODES:
+                current = self.sensitive.mode(group_id)
+                yield event.plain_result(
+                    "用法: /sw mode <custom|library|both>\n"
+                    f"custom  - {MODE_LABELS[MODE_CUSTOM]}\n"
+                    f"library - {MODE_LABELS[MODE_LIBRARY]}\n"
+                    f"both    - {MODE_LABELS[MODE_BOTH]}\n"
+                    f"当前: {MODE_LABELS[current]}"
+                )
+                return
+            await self.sensitive.set_mode(group_id, target)
+            note = ""
+            if target in (MODE_LIBRARY, MODE_BOTH):
+                count, error = await self.sensitive.reload_library()
+                note = f"\n远程词库已加载 {count} 条" if not error else f"\n远程词库加载失败: {error}"
+            yield event.plain_result(f"词库模式已切换为: {MODE_LABELS[target]}{note}")
+            return
+
+        if action == "reload":
+            count, error = await self.sensitive.reload_library()
+            if error:
+                yield event.plain_result(f"远程词库加载失败: {error}")
+                return
+            yield event.plain_result(f"远程词库已刷新，共 {count} 条")
+            return
+
+        enabled = self.sw_toggle.is_enabled(group_id)
+        duration = self.sw_toggle.value(group_id, "duration", 600)
+        mode = self.sensitive.mode(group_id)
+        yield event.plain_result(
+            "敏感词系统状态\n"
+            f"开关: {'开启' if enabled else '关闭'}\n"
+            f"禁言时长: {'永久' if duration == 0 else format_duration(duration)}\n"
+            f"词库模式: {MODE_LABELS[mode]}\n"
+            f"自定义词条: {len(self.sensitive.custom_words(group_id))}\n"
+            f"远程词条: {self.sensitive.library_size}\n\n"
+            "可用: /sw on [时长] | /sw off | /sw add <文本> | /sw del <文本>\n"
+            "      /sw list | /sw mode <custom|library|both> | /sw reload"
+        )
+
+    # ------------------------------------------------------------------
+    # 刷屏检测开关
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("antiflood", alias={"flood", "af"})
+    async def cmd_antiflood(self, event: AstrMessageEvent):
+        """/antiflood on|off - 刷屏检测开关"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        args = self._args(event, "antiflood")
+        if not args:
+            args = self._args(event, "flood") or self._args(event, "af")
+        action = args[0].lower() if args else "status"
+
+        if action == "on":
+            duration = coerce_int(self.config.get("flood_mute_duration"), 600)
+            if len(args) > 1:
+                parsed = parse_duration(args[1], default_unit="m")
+                if parsed is None:
+                    yield event.plain_result("时长格式错误。例: /antiflood on 10m")
+                    return
+                duration = min(parsed, MAX_DURATION)
+
+            await self.flood_toggle.enable(group_id, duration=duration)
+            yield event.plain_result(
+                "刷屏检测已开启\n"
+                f"判定: {self.flood.window} 秒内 {self.flood.threshold} 条，"
+                f"或连续重复 {self.flood.repeat_limit} 次\n"
+                f"处理: {'撤回并禁言 ' + format_duration(duration) if duration else '仅撤回'}"
+            )
+            return
+
+        if action == "off":
+            await self.flood_toggle.disable(group_id)
+            self.flood.reset(group_id)
+            yield event.plain_result("刷屏检测已关闭")
+            return
+
+        enabled = self.flood_toggle.is_enabled(group_id)
+        duration = self.flood_toggle.value(
+            group_id, "duration", coerce_int(self.config.get("flood_mute_duration"), 600)
+        )
+        yield event.plain_result(
+            "刷屏检测状态\n"
+            f"开关: {'开启' if enabled else '关闭'}\n"
+            f"窗口: {self.flood.window} 秒 / {self.flood.threshold} 条\n"
+            f"重复阈值: {self.flood.repeat_limit} 次\n"
+            f"禁言时长: {'仅撤回' if not duration else format_duration(duration)}\n\n"
+            "可用: /antiflood on [时长] | /antiflood off"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("cardcheck", alias={"cc"})
+    async def cmd_cardcheck(self, event: AstrMessageEvent):
+        """/cardcheck on|off - 群成员名片检测开关"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        args = self._args(event, "cardcheck") or self._args(event, "cc")
+        action = args[0].lower() if args else "status"
+
+        if action == "on":
+            await self.card_toggle.enable(group_id)
+            yield event.plain_result(
+                "群名片检测已开启\n"
+                f"检测内容: 广告特征（评分阈值 "
+                f"{coerce_int(self.config.get('card_ad_threshold'), 4)}）与敏感词\n"
+                f"处理方式: {self.config.get('card_action', 'warn')}（可在插件配置修改）"
+            )
+            return
+
+        if action == "off":
+            await self.card_toggle.disable(group_id)
+            yield event.plain_result("群名片检测已关闭")
+            return
+
+        enabled = self.card_toggle.is_enabled(group_id)
+        yield event.plain_result(
+            "群名片检测状态\n"
+            f"开关: {'开启' if enabled else '关闭'}\n"
+            f"处理方式: {self.config.get('card_action', 'warn')}\n\n"
+            "可用: /cardcheck on | /cardcheck off"
+        )
+
+    # ------------------------------------------------------------------
+    # 文件仓库
+    # ------------------------------------------------------------------
+
+    @filter.command("file")
+    async def cmd_file(self, event: AstrMessageEvent):
+        """文件仓库: upload/download/log/list/delete
+
+        download/list/log 查看对全体群成员开放，
+        upload/delete/log update 仅 AstrBot 管理员可用。
+        """
+        raw = self._raw_after(event, "file")
+        parts = raw.split()
+        action = parts[0].lower() if parts else "help"
+
+        is_log_update = action == "log" and len(parts) > 1 and parts[1].lower() == "update"
+        if (action in ADMIN_FILE_ACTIONS or is_log_update) and not event.is_admin():
+            label = "log update" if is_log_update else action
+            yield event.plain_result(f"/file {label} 仅 AstrBot 管理员可用")
+            return
+
+        if action == "upload":
+            async for result in self._file_upload(event, parts[1:]):
+                yield result
+            return
+
+        if action == "download":
+            async for result in self._file_download(event, parts[1:]):
+                yield result
+            return
+
+        if action == "log":
+            async for result in self._file_log(event, parts[1:], raw):
+                yield result
+            return
+
+        if action == "list":
+            names = self.files.names()
+            if not names:
+                yield event.plain_result("文件仓库为空")
+                return
+            lines = ["文件仓库"]
+            for name in names:
+                entry = self.files.get(name) or {}
+                version = entry.get("version") or "未标记版本"
+                lines.append(
+                    f"· {name} | {version} | {format_size(entry.get('size', 0))} "
+                    f"| 下载 {entry.get('downloads', 0)} 次"
+                )
+            yield event.plain_result("\n".join(lines))
+            return
+
+        if action in {"delete", "del", "rm"}:
+            if len(parts) < 2:
+                yield event.plain_result("用法: /file delete <name>")
+                return
+            ok, message = await self.files.delete(parts[1])
+            yield event.plain_result(message)
+            return
+
+        yield event.plain_result(
+            "文件仓库用法\n"
+            "/file download <name>      获取临时下载链接\n"
+            "/file log <name> [次数]     查看更新日志\n"
+            "/file list                 查看全部文件\n"
+            "以下仅管理员可用:\n"
+            "/file upload <name> <时长>  上传文件（随后发送文件即可）\n"
+            "/file log update <name> <version> <内容>  记录更新\n"
+            "/file delete <name>        删除文件\n"
+            "时长支持: 30s / 10m / 2h / 7d"
+        )
+
+    async def _file_upload(self, event: AstrMessageEvent, args: List[str]):
+        """/file upload <name> <时长> - 登记一次上传，等待随后发送的文件。"""
+        if not args:
+            yield event.plain_result("用法: /file upload <name> <时长>\n例: /file upload guoclient 3m")
+            return
+
+        from .core.utils import safe_name
+
+        name = safe_name(args[0])
+        if not name:
+            yield event.plain_result("文件名不合法，仅允许中英文、数字、-、_、.")
+            return
+
+        ttl = coerce_int(self.config.get("file_default_ttl"), 3600)
+        if len(args) > 1:
+            parsed = parse_duration(args[1], default_unit="m")
+            if parsed is None:
+                yield event.plain_result("时长格式错误。例: /file upload guoclient 3m")
+                return
+            ttl = parsed if parsed > 0 else MAX_DURATION
+
+        key = f"{event.get_group_id() or 'private'}:{event.get_sender_id()}"
+        self._pending_upload[key] = {
+            "name": name,
+            "ttl": ttl,
+            "created": time.time(),
+            "unified_origin": event.unified_msg_origin,
+        }
+
+        yield event.plain_result(
+            f"已准备接收文件「{name}」\n"
+            f"下载链接有效期: {format_duration(ttl)}\n"
+            "请在 5 分钟内发送该文件（支持 zip 等任意格式）"
+        )
+
+    async def _file_download(self, event: AstrMessageEvent, args: List[str]):
+        """/file download <name> - 签发临时下载链接。"""
+        if not args:
+            yield event.plain_result("用法: /file download <name>")
+            return
+
+        if not self.config.get("file_server_enabled", True):
+            yield event.plain_result("文件下载服务未启用，请在插件配置中开启 file_server_enabled")
+            return
+
+        url, error = await self.files.issue_token(args[0], str(event.get_sender_id()))
+        if error:
+            yield event.plain_result(error)
+            return
+
+        entry = self.files.get(args[0]) or {}
+        ttl = int(entry.get("ttl") or 3600)
+        version = entry.get("version") or "未标记版本"
+        yield event.plain_result(
+            f"文件: {args[0]}（{version}，{format_size(entry.get('size', 0))}）\n"
+            f"下载链接: {url}\n"
+            f"有效期: {format_duration(ttl)}，过期后需重新获取"
+        )
+
+    async def _file_log(self, event: AstrMessageEvent, args: List[str], raw: str):
+        """/file log <name> [次数] 与 /file log update <name> <version> <内容>"""
+        if not args:
+            yield event.plain_result("用法: /file log <name> [次数] 或 /file log update <name> <version> <内容>")
+            return
+
+        if args[0].lower() == "update":
+            if not event.is_admin():
+                yield event.plain_result("/file log update 仅 AstrBot 管理员可用")
+                return
+            if len(args) < 4:
+                yield event.plain_result(
+                    "用法: /file log update <name> <version> <内容>\n"
+                    "例: /file log update guoclient 1.2.0 修复了启动崩溃"
+                )
+                return
+            name, version = args[1], args[2]
+            marker = f"update {name} {version}"
+            index = raw.find(marker)
+            contents = raw[index + len(marker):].strip() if index >= 0 else " ".join(args[3:])
+            ok, message = await self.files.add_changelog(
+                name, version, contents, str(event.get_sender_id())
+            )
+            yield event.plain_result(message)
+            return
+
+        name = args[0]
+        count = 10
+        if len(args) > 1:
+            try:
+                count = max(1, min(int(args[1]), 100))
+            except ValueError:
+                yield event.plain_result("次数必须是数字。例: /file log guoclient 20")
+                return
+
+        if not self.files.get(name):
+            yield event.plain_result(f"文件「{name}」不存在")
+            return
+
+        records = self.files.changelog(name, count)
+        if not records:
+            yield event.plain_result(f"「{name}」暂无更新记录")
+            return
+
+        api = OneBotApi(event)
+        group_id = event.get_group_id()
+        title = f"{name}近{len(records)}次更新记录"
+
+        if api.available and group_id:
+            bot_id = str(event.get_self_id() or "10000")
+            nodes = [forward_node(bot_id, title, f"【{title}】")]
+            for index, record in enumerate(records, start=1):
+                stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(record.get("time", 0)))
+                nodes.append(
+                    forward_node(
+                        bot_id,
+                        f"v{record.get('version', '?')}",
+                        f"#{index} 版本 {record.get('version', '?')}\n"
+                        f"时间: {stamp}\n"
+                        f"更新内容: {record.get('contents', '')}",
+                    )
+                )
+            if await api.send_forward(int(group_id), nodes) is not None:
+                return
+
+        lines = [f"【{title}】"]
+        for index, record in enumerate(records, start=1):
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(record.get("time", 0)))
+            lines.append(
+                f"#{index} v{record.get('version', '?')} | {stamp}\n{record.get('contents', '')}"
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
+    async def on_file_received(self, event: AstrMessageEvent):
+        """接收管理员紧接 /file upload 之后发送的文件。"""
+        key = f"{event.get_group_id() or 'private'}:{event.get_sender_id()}"
+        pending = self._pending_upload.get(key)
+        if not pending:
+            return
+
+        if time.time() - pending["created"] > 300:
+            self._pending_upload.pop(key, None)
+            return
+
+        file_component = None
+        for component in event.message_obj.message or []:
+            if type(component).__name__ == "File":
+                file_component = component
+                break
+        if file_component is None:
+            return
+
+        self._pending_upload.pop(key, None)
+        path = getattr(file_component, "file_", None) or getattr(file_component, "file", None)
+        original = getattr(file_component, "name", None) or "upload.zip"
+
+        if not path:
+            try:
+                path = await file_component.get_file()
+            except Exception as exc:
+                logger.error(f"[ZM-QQManager] 获取文件失败: {exc}")
+
+        if not path:
+            await event.send(event.plain_result(f"未能获取文件「{pending['name']}」的本地路径，上传失败"))
+            event.stop_event()
+            return
+
+        ok, message = await self.files.save_upload(
+            pending["name"], str(path), str(original), str(event.get_sender_id()), pending["ttl"]
+        )
+        detail = ""
+        if ok:
+            detail = (
+                f"\n下载命令: /file download {pending['name']}"
+                f"\n链接有效期: {format_duration(pending['ttl'])}"
+            )
+        await event.send(event.plain_result(message + detail))
+        event.stop_event()
+
+    # ------------------------------------------------------------------
+    # 合并转发伪造
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("merge")
+    async def cmd_merge(self, event: AstrMessageEvent):
+        """/merge <title> <qq> <内容> [<qq> <内容> ...] - 构造合并转发消息"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        parts = self._raw_after(event, "merge").split()
+        if len(parts) < 3:
+            yield event.plain_result(
+                "用法: /merge <title> <qq> <内容> [<qq> <内容> ...]\n"
+                "例: /merge 乐子 3332 你好呀\n"
+                "多人: /merge 乐子 3332 你好 4443 在的"
+            )
+            return
+
+        title = parts[0]
+        # 从第二段开始，遇到 QQ 号就切换发言人，其余内容归当前发言人
+        entries: List[tuple] = []
+        current_qq = None
+        buffer: List[str] = []
+
+        for token in parts[1:]:
+            if token.isdigit() and 5 <= len(token) <= 12:
+                if current_qq is not None and buffer:
+                    entries.append((current_qq, " ".join(buffer)))
+                current_qq = token
+                buffer = []
+            elif current_qq is not None:
+                buffer.append(token)
+
+        if current_qq is not None and buffer:
+            entries.append((current_qq, " ".join(buffer)))
+
+        if not entries:
+            yield event.plain_result("未解析到有效的 <qq> <内容> 组合，请检查格式")
+            return
+
+        nodes = []
+        for qq, content in entries:
+            name = await resolve_member_name(api, int(group_id), qq)
+            nodes.append(forward_node(qq, name, content))
+
+        if await api.send_forward(int(group_id), nodes) is None:
+            yield event.plain_result("合并转发发送失败，可能是协议端不支持或内容被拦截")
+            return
+
+        logger.info(
+            f"[ZM-QQManager] {event.get_sender_id()} 在群 {group_id} 构造合并转发「{title}」"
+            f"，共 {len(entries)} 条"
+        )
+
+    # ------------------------------------------------------------------
+    # 赛博击杀
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("kill")
+    async def cmd_kill(self, event: AstrMessageEvent):
+        """/kill <成员> <理由> - 在该成员所在的群同步播报"""
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        raw = self._raw_after(event, "kill")
+        targets = extract_targets(event, raw)
+        if not targets:
+            yield event.plain_result("用法: /kill <成员> <理由>\n例: /kill @某人 恶意刷屏")
+            return
+
+        target = targets[0]
+        reason = raw
+        for token in list(targets) + [f"@{target}"]:
+            reason = reason.replace(token, " ")
+        reason = " ".join(reason.split()).strip() or "未说明原因"
+
+        current_group = event.get_group_id()
+        template = str(
+            self.config.get("kill_template")
+            or "检测到 {name}（{target}）因为 {reason} 被赛博击杀，建议管理踢出此成员"
+        )
+
+        groups = []
+        if self.config.get("kill_notify_all_groups", True):
+            for item in await api.group_list():
+                gid = str(item.get("group_id") or "")
+                if not gid:
+                    continue
+                info = await api.member_info(int(gid), int(target))
+                if info.get("user_id"):
+                    groups.append(gid)
+        elif current_group:
+            groups = [str(current_group)]
+
+        if not groups and current_group:
+            groups = [str(current_group)]
+
+        name = target
+        if groups:
+            name = await resolve_member_name(api, int(groups[0]), target)
+
+        message = template
+        for key, value in {
+            "at": f"[CQ:at,qq={target}]",
+            "target": target,
+            "name": name,
+            "reason": reason,
+            "operator": str(event.get_sender_id()),
+            "group_id": str(current_group or ""),
+        }.items():
+            message = message.replace("{" + key + "}", value)
+
+        sent = 0
+        for gid in groups:
+            if await api.send_group_msg(int(gid), message) is not None:
+                sent += 1
+
+        if not sent:
+            yield event.plain_result("播报失败，未能向任何群发送消息")
+            return
+
+        if sent > 1 or (groups and str(current_group) not in groups):
+            yield event.plain_result(f"已在 {sent} 个共同群播报对 {name}（{target}）的击杀信息")
+
+    # ------------------------------------------------------------------
+    # 自动检测：刷屏 / 敏感词 / 名片
+    # ------------------------------------------------------------------
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1)
+    async def on_group_message(self, event: AstrMessageEvent):
+        """群消息自动检测入口。"""
+        group_id = self._require_group(event)
+        if not group_id:
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            return
+
+        user_id = str(event.get_sender_id())
+        text = event.message_str or ""
         self._record_message(event)
 
-        # 检查是否是群消息
-        if not event.message_obj.group_id:
-            return MessageEventResult()
+        # 管理员自己不受自动检测约束
+        if event.is_admin():
+            return
 
-        group_id = str(event.message_obj.group_id)
+        # 封禁名单成员直接踢出
+        if user_id in self._ban_list(group_id):
+            try:
+                await api.kick(int(group_id), int(user_id), reject=True)
+                logger.info(f"[ZM-QQManager] 封禁用户 {user_id} 在群 {group_id} 发言，已踢出")
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 踢出封禁用户失败: {exc}")
+            event.stop_event()
+            return
 
-        # 检查用户是否被封禁
-        user_id = str(event.message_obj.sender.user_id)
-        if self._is_user_banned(group_id, user_id):
-            # 自动踢出封禁用户
-            await self._kick_user(event, user_id)
-            return MessageEventResult().stop_event()
+        if await self._check_sensitive(event, api, group_id, user_id, text):
+            return
+        if await self._check_ad(event, api, group_id, user_id, text):
+            return
+        if await self._check_flood(event, api, group_id, user_id, text):
+            return
+        await self._check_card(event, api, group_id, user_id)
 
-        # 检查是否启用广告拦截
-        adban_key = self._get_adban_key(group_id)
-        if self.db.get(adban_key, False):
-            # 计算广告评分
-            score = self._calculate_ad_score(event.message_str)
+    async def _check_ad(self, event, api, group_id, user_id, text) -> bool:
+        """广告评分命中则撤回 + 禁言，返回是否已处理。"""
+        if not self.adban_toggle.is_enabled(group_id) or not text:
+            return False
 
-            # 评分阈值: 6 分以上视为广告
-            if score >= 6:
-                # 撤回消息
-                await self._recall_message(event, event.message_obj.message_id)
+        threshold = coerce_int(self.config.get("ad_threshold"), 6)
+        score = ad_score(text)
+        if score < threshold:
+            return False
 
-                # 禁言 10 分钟
-                await self._mute_user(event, user_id, 600)
+        duration = coerce_int(self.config.get("ad_mute_duration"), 600)
+        await self._punish(
+            event, api, group_id, user_id, duration, f"广告评分 {score}", recall=True
+        )
 
-                logger.info(f"检测到广告 (评分: {score}), 已撤回并禁言用户 {user_id}")
-                return MessageEventResult().stop_event()
+        tip = self.config.get("ad_tip") or "{at} 消息被判定为广告（评分 {score}），已撤回并禁言 {duration}"
+        await api.send_group_msg(
+            int(group_id),
+            self._render(
+                tip,
+                event,
+                score=str(score),
+                duration="永久" if duration == 0 else format_duration(duration),
+            ),
+        )
+        logger.info(
+            f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 触发广告拦截（评分 {score}）"
+        )
+        event.stop_event()
+        return True
 
-        return MessageEventResult()
+    async def _check_sensitive(self, event, api, group_id, user_id, text) -> bool:
+        """敏感词命中则撤回 + 禁言，返回是否已处理。"""
+        if not self.sw_toggle.is_enabled(group_id) or not text:
+            return False
 
-    @star_receiver(event_type="member_increase")
-    async def handle_member_join(self, event: AstrMessageEvent) -> MessageEventResult:
-        """处理成员加群事件"""
-        if not event.message_obj.group_id:
-            return MessageEventResult()
+        word = await self.sensitive.check(group_id, text)
+        if not word:
+            return False
 
-        group_id = str(event.message_obj.group_id)
-        user_id = str(event.message_obj.user_id)
+        duration = int(self.sw_toggle.value(group_id, "duration", 600))
+        await self._punish(
+            event, api, group_id, user_id, duration, f"敏感词: {word}", recall=True
+        )
 
-        # 检查是否在封禁列表
-        if self._is_user_banned(group_id, user_id):
-            # 自动踢出
-            await self._kick_user(event, user_id)
-            logger.info(f"封禁用户 {user_id} 尝试加入群 {group_id}，已自动踢出")
-            return MessageEventResult().stop_event()
+        tip = self.config.get("sensitive_tip") or "{at} 消息包含敏感内容，已撤回并禁言 {duration}"
+        message = self._render(
+            tip,
+            event,
+            word=word,
+            duration="永久" if duration == 0 else format_duration(duration),
+        )
+        await api.send_group_msg(int(group_id), message)
+        logger.info(
+            f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 命中敏感词「{word}」"
+            f"，已撤回并禁言 {duration} 秒"
+        )
+        event.stop_event()
+        return True
 
-        # 发送欢迎消息
-        key = self._get_welcome_key(group_id)
-        welcome_data = self.db.get(key)
+    async def _check_flood(self, event, api, group_id, user_id, text) -> bool:
+        """刷屏命中则按配置撤回 + 禁言，返回是否已处理。"""
+        if not self.flood_toggle.is_enabled(group_id):
+            return False
 
-        if welcome_data and welcome_data.get('enabled'):
-            content = self._replace_placeholders(welcome_data.get('content', ''), event)
-            return MessageEventResult().message(content)
+        self.flood.configure(
+            coerce_int(self.config.get("flood_threshold"), 5),
+            coerce_int(self.config.get("flood_window"), 10),
+            coerce_int(self.config.get("flood_repeat_limit"), 3),
+        )
+        reason = self.flood.record(group_id, user_id, text)
+        if not reason:
+            return False
 
-        return MessageEventResult()
+        duration = int(
+            self.flood_toggle.value(
+                group_id, "duration", coerce_int(self.config.get("flood_mute_duration"), 600)
+            )
+        )
+        await self._punish(
+            event,
+            api,
+            group_id,
+            user_id,
+            duration,
+            f"刷屏: {reason}",
+            recall=bool(self.config.get("flood_recall", True)),
+        )
 
+        tip = self.config.get("flood_tip") or "{at} 检测到刷屏（{reason}），已禁言 {duration}"
+        message = self._render(
+            tip,
+            event,
+            reason=reason,
+            duration="永久" if duration == 0 else format_duration(duration),
+        )
+        await api.send_group_msg(int(group_id), message)
+        logger.info(f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 触发刷屏检测: {reason}")
+        event.stop_event()
+        return True
 
-# 导入 asyncio (用于延迟操作)
-import asyncio
+    async def _check_card(self, event, api, group_id, user_id) -> None:
+        """检测群名片是否含广告或敏感词。"""
+        if not (
+            self.card_toggle.is_enabled(group_id)
+            or self.config.get("card_check_enabled", False)
+        ):
+            return
+
+        card = ""
+        try:
+            card = str(getattr(event.message_obj.sender, "card", "") or "")
+        except AttributeError:
+            card = ""
+        if not card:
+            info = await api.member_info(int(group_id), int(user_id))
+            card = str(info.get("card") or "")
+        if not card or not self.cards.should_check(group_id, user_id, card):
+            return
+
+        reason = ""
+        threshold = coerce_int(self.config.get("card_ad_threshold"), 4)
+        score = ad_score(card)
+        if score >= threshold:
+            reason = f"广告特征评分 {score}"
+        else:
+            word = await self.sensitive.check(group_id, card)
+            if word:
+                reason = f"敏感词: {word}"
+        if not reason:
+            return
+
+        action = str(self.config.get("card_action") or "warn").lower()
+        tip = self.config.get("card_tip") or "{at} 你的群名片（{card}）疑似包含违规内容（{reason}），请及时修改"
+        message = self._render(tip, event, card=truncate(card, 30), reason=reason)
+
+        if action == "reset":
+            await api.try_call(
+                "set_group_card", group_id=int(group_id), user_id=int(user_id), card=""
+            )
+            message += "\n已清空你的群名片"
+        elif action == "mute":
+            duration = coerce_int(self.config.get("card_mute_duration"), 600)
+            try:
+                await api.mute(int(group_id), int(user_id), duration)
+                await self.mutes.record(group_id, user_id, duration, f"名片违规: {reason}", "自动检测")
+                message += f"\n已禁言 {format_duration(duration)}"
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 名片违规禁言失败: {exc}")
+        elif action == "kick":
+            try:
+                await api.kick(int(group_id), int(user_id))
+                message += "\n已移出本群"
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 名片违规踢出失败: {exc}")
+
+        await api.send_group_msg(int(group_id), message)
+        logger.info(f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 名片违规: {reason}")
+
+    # ------------------------------------------------------------------
+    # 成员管理（踢出 / 封禁 / 管理员 / 头衔）
+    # ------------------------------------------------------------------
+
+    def _ban_list(self, group_id: str) -> List[str]:
+        bucket = self.settings.group(str(group_id))
+        banned = bucket.get("banlist")
+        if not isinstance(banned, list):
+            banned = []
+            bucket["banlist"] = banned
+        return banned
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("kick")
+    async def cmd_kick(self, event: AstrMessageEvent):
+        """/kick <成员> - 踢出成员；/kick <时间> - 清理不活跃成员"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        raw = self._raw_after(event, "kick")
+        targets = extract_targets(event, raw)
+
+        if targets:
+            succeeded, failed = [], []
+            for user_id in targets:
+                try:
+                    await api.kick(int(group_id), int(user_id))
+                    succeeded.append(user_id)
+                except RuntimeError as exc:
+                    failed.append(f"{user_id}({exc})")
+            lines = []
+            if succeeded:
+                lines.append(f"已踢出: {', '.join(succeeded)}")
+            if failed:
+                lines.append(f"失败: {', '.join(failed)}")
+            yield event.plain_result("\n".join(lines))
+            return
+
+        # 无目标时按"清理 N 天未发言"处理
+        threshold = parse_duration(raw, default_unit="d") if raw else None
+        if not threshold:
+            yield event.plain_result(
+                "用法: /kick <成员> 踢出成员\n"
+                "      /kick <时间> 清理该时长内未发言的成员（例: /kick 20d）"
+            )
+            return
+
+        members = await api.member_list(int(group_id))
+        if not members:
+            yield event.plain_result("无法获取群成员列表，操作已取消")
+            return
+
+        now = int(time.time())
+        self_id = str(event.get_self_id() or "")
+        stale = []
+        for member in members:
+            uid = str(member.get("user_id") or "")
+            if not uid or uid == self_id:
+                continue
+            if str(member.get("role") or "member") != "member":
+                continue
+            last = member.get("last_sent_time") or member.get("join_time") or 0
+            try:
+                last = int(last)
+            except (TypeError, ValueError):
+                continue
+            if last and now - last >= threshold:
+                stale.append(uid)
+
+        if not stale:
+            yield event.plain_result(f"没有超过 {format_duration(threshold)} 未发言的普通成员")
+            return
+
+        removed = 0
+        for uid in stale:
+            try:
+                await api.kick(int(group_id), int(uid))
+                removed += 1
+                await asyncio.sleep(0.5)
+            except RuntimeError:
+                continue
+        yield event.plain_result(
+            f"已清理 {removed}/{len(stale)} 名超过 {format_duration(threshold)} 未发言的成员"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("ban")
+    async def cmd_ban(self, event: AstrMessageEvent):
+        """/ban <成员> - 封禁并踢出，后续自动拒绝加群"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        targets = extract_targets(event, self._raw_after(event, "ban"))
+        if not targets:
+            yield event.plain_result("用法: /ban <成员>")
+            return
+
+        banned = self._ban_list(group_id)
+        added = []
+        for user_id in targets:
+            if user_id not in banned:
+                banned.append(user_id)
+            added.append(user_id)
+            try:
+                await api.kick(int(group_id), int(user_id), reject=True)
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 封禁踢出失败 {user_id}: {exc}")
+        await self.settings.save()
+        yield event.plain_result(
+            f"已封禁 {len(added)} 人: {', '.join(added)}\n后续加群申请将被自动拒绝"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("unban")
+    async def cmd_unban(self, event: AstrMessageEvent):
+        """/unban <QQ号> - 解除封禁"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        targets = extract_targets(event, self._raw_after(event, "unban"))
+        if not targets:
+            yield event.plain_result("用法: /unban <QQ号>")
+            return
+
+        banned = self._ban_list(group_id)
+        removed = [uid for uid in targets if uid in banned]
+        for uid in removed:
+            banned.remove(uid)
+        await self.settings.save()
+
+        if not removed:
+            yield event.plain_result("这些用户不在封禁列表中")
+            return
+        yield event.plain_result(f"已解除封禁: {', '.join(removed)}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("banlist")
+    async def cmd_banlist(self, event: AstrMessageEvent):
+        """/banlist - 查看封禁列表"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        banned = self._ban_list(group_id)
+        if not banned:
+            yield event.plain_result("本群封禁列表为空")
+            return
+        yield event.plain_result(
+            f"本群封禁列表（共 {len(banned)} 人）\n" + "\n".join(f"· {uid}" for uid in banned)
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("op")
+    async def cmd_op(self, event: AstrMessageEvent):
+        """/op <成员> - 设置群管理员"""
+        async for result in self._toggle_admin(event, "op", True):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("deop")
+    async def cmd_deop(self, event: AstrMessageEvent):
+        """/deop <成员> - 取消群管理员"""
+        async for result in self._toggle_admin(event, "deop", False):
+            yield result
+
+    async def _toggle_admin(self, event: AstrMessageEvent, command: str, enable: bool):
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        targets = extract_targets(event, self._raw_after(event, command))
+        if not targets:
+            yield event.plain_result(f"用法: /{command} <成员>")
+            return
+
+        succeeded, failed = [], []
+        for user_id in targets:
+            try:
+                await api.set_admin(int(group_id), int(user_id), enable)
+                succeeded.append(user_id)
+            except RuntimeError as exc:
+                failed.append(f"{user_id}({exc})")
+
+        lines = []
+        if succeeded:
+            lines.append(
+                f"已{'设置' if enable else '取消'}管理员: {', '.join(succeeded)}"
+            )
+        if failed:
+            lines.append(f"失败: {', '.join(failed)}（此操作通常需要群主权限）")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("title")
+    async def cmd_title(self, event: AstrMessageEvent):
+        """/title @成员 <文本> - 设置群头衔；/title unset @成员 - 取消"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        raw = self._raw_after(event, "title")
+        parts = raw.split()
+        unset = bool(parts) and parts[0].lower() in {"unset", "clear", "取消"}
+        targets = extract_targets(event, raw)
+        if not targets:
+            yield event.plain_result(
+                "用法: /title @成员 <文本>\n      /title unset @成员"
+            )
+            return
+
+        user_id = targets[0]
+        if unset:
+            title = ""
+        else:
+            title = raw
+            for token in targets:
+                title = title.replace(token, " ")
+            title = self._render(" ".join(title.split()).strip(), event)
+            if not title:
+                yield event.plain_result("请提供头衔文本，或使用 /title unset @成员 取消")
+                return
+
+        try:
+            await api.set_title(int(group_id), int(user_id), title)
+        except RuntimeError as exc:
+            yield event.plain_result(f"设置头衔失败: {exc}（此操作通常需要群主权限）")
+            return
+
+        yield event.plain_result(
+            f"已取消 {user_id} 的群头衔" if unset else f"已为 {user_id} 设置头衔「{title}」"
+        )
+
+    # ------------------------------------------------------------------
+    # 消息撤回
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("recall")
+    async def cmd_recall(self, event: AstrMessageEvent):
+        """/recall - 撤回被回复的消息；/recall <数量> - 批量撤回近期消息"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        # 优先处理引用回复
+        for component in event.message_obj.message or []:
+            if type(component).__name__ == "Reply":
+                target_id = getattr(component, "id", None)
+                if target_id is None:
+                    continue
+                try:
+                    await api.recall(target_id)
+                except RuntimeError as exc:
+                    yield event.plain_result(f"撤回失败: {exc}")
+                    return
+                return
+
+        args = self._args(event, "recall")
+        if not args:
+            yield event.plain_result(
+                "用法: 回复某条消息后使用 /recall\n      或 /recall <数量> 批量撤回近期消息"
+            )
+            return
+
+        try:
+            count = max(1, min(int(args[0]), 50))
+        except ValueError:
+            yield event.plain_result("数量必须是数字。例: /recall 5")
+            return
+
+        history = self._message_history.get(group_id, [])
+        # 跳过 /recall 自身
+        pending = [
+            item for item in history if item["message_id"] != event.message_obj.message_id
+        ][-count:]
+        if not pending:
+            yield event.plain_result("没有可撤回的记录（插件仅记录启动后的消息）")
+            return
+
+        removed = 0
+        for item in reversed(pending):
+            if await api.try_call("delete_msg", message_id=item["message_id"]) is not None:
+                removed += 1
+        await api.try_call("delete_msg", message_id=event.message_obj.message_id)
+
+        if not removed:
+            yield event.plain_result("撤回失败，消息可能已超过 2 分钟撤回时限")
+            return
+        logger.info(f"[ZM-QQManager] 群 {group_id} 批量撤回 {removed} 条消息")
+
+    # ------------------------------------------------------------------
+    # 群广告与欢迎
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("ad")
+    async def cmd_ad(self, event: AstrMessageEvent):
+        """/ad - 发布广告；/ad set <文本> | /ad clear | /ad reset"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        bucket = self.settings.group(group_id)
+        raw = self._raw_after(event, "ad")
+        parts = raw.split()
+
+        if not parts:
+            content = (bucket.get("ad") or {}).get("content")
+            if not content:
+                yield event.plain_result("本群尚未设置广告，可用 /ad set <文本> 设置")
+                return
+            yield event.plain_result(self._render(content, event))
+            return
+
+        action = parts[0].lower()
+        rest = raw[len(parts[0]):].strip()
+
+        if action == "set":
+            if not rest:
+                yield event.plain_result("用法: /ad set <文本>")
+                return
+            bucket["ad"] = {"content": rest, "updated_at": int(time.time())}
+            await self.settings.save()
+            yield event.plain_result("广告已保存，使用 /ad 发布")
+            return
+
+        if action == "clear":
+            bucket.pop("ad", None)
+            await self.settings.save()
+            yield event.plain_result("广告已清空")
+            return
+
+        if action == "reset":
+            default_ad = "这是一条默认广告，请使用 /ad set 设置自定义广告"
+            bucket["ad"] = {"content": default_ad, "updated_at": int(time.time())}
+            await self.settings.save()
+            yield event.plain_result("已恢复默认广告")
+            return
+
+        yield event.plain_result("未知子命令，可用: set, clear, reset")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("adban")
+    async def cmd_adban(self, event: AstrMessageEvent):
+        """/adban [on|off] - 广告拦截开关"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        args = self._args(event, "adban")
+        action = args[0].lower() if args else ""
+
+        if action == "on":
+            await self.adban_toggle.enable(group_id)
+            yield event.plain_result("广告拦截已开启（评分 ≥ 6 判定为广告，撤回并禁言 10 分钟）")
+            return
+        if action == "off":
+            await self.adban_toggle.disable(group_id)
+            yield event.plain_result("广告拦截已关闭")
+            return
+
+        # 无参数时切换开关，保持原有行为
+        if self.adban_toggle.is_enabled(group_id):
+            await self.adban_toggle.disable(group_id)
+            yield event.plain_result("广告拦截已关闭")
+        else:
+            await self.adban_toggle.enable(group_id)
+            yield event.plain_result("广告拦截已开启")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("wel")
+    async def cmd_welcome(self, event: AstrMessageEvent):
+        """/wel - 预览欢迎语；/wel set <文本> | on | off | reset | status"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        bucket = self.settings.group(group_id)
+        welcome = bucket.get("welcome")
+        if not isinstance(welcome, dict):
+            welcome = {}
+            bucket["welcome"] = welcome
+
+        raw = self._raw_after(event, "wel")
+        parts = raw.split()
+
+        if not parts:
+            content = welcome.get("content")
+            if not content:
+                yield event.plain_result("尚未设置欢迎消息，可用 /wel set <文本> 设置")
+                return
+            yield event.plain_result(self._render(content, event))
+            return
+
+        action = parts[0].lower()
+        rest = raw[len(parts[0]):].strip()
+
+        if action == "set":
+            if not rest:
+                yield event.plain_result("用法: /wel set <文本>，支持 {at} {name} {user_id} {group_id}")
+                return
+            welcome.update({"content": rest, "enabled": True})
+            await self.settings.save()
+            yield event.plain_result("欢迎消息已保存并开启自动欢迎")
+            return
+
+        if action == "on":
+            if not welcome.get("content"):
+                welcome["content"] = "欢迎 {at} 加入本群！"
+            welcome["enabled"] = True
+            await self.settings.save()
+            yield event.plain_result("自动入群欢迎已开启")
+            return
+
+        if action == "off":
+            welcome["enabled"] = False
+            await self.settings.save()
+            yield event.plain_result("自动入群欢迎已关闭")
+            return
+
+        if action == "reset":
+            welcome.update({"content": "欢迎 {at} 加入本群！", "enabled": True})
+            await self.settings.save()
+            yield event.plain_result("已恢复默认欢迎内容")
+            return
+
+        if action == "status":
+            yield event.plain_result(
+                "欢迎消息状态\n"
+                f"开关: {'开启' if welcome.get('enabled') else '关闭'}\n"
+                f"内容: {welcome.get('content') or '（未设置）'}"
+            )
+            return
+
+        yield event.plain_result("未知子命令，可用: set, on, off, reset, status")
+
+    # ------------------------------------------------------------------
+    # 我的世界工具
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("slimefinder", alias={"sf"})
+    async def cmd_slimefinder(self, event: AstrMessageEvent):
+        """/slimefinder <version> <seed> - 查找史莱姆区块"""
+        raw = self._raw_after(event, "slimefinder")
+        if raw == (event.message_str or "").strip():
+            raw = self._raw_after(event, "sf")
+        parts = raw.split()
+
+        if len(parts) < 2:
+            yield event.plain_result(
+                "用法: /slimefinder <version> <seed>\n示例: /slimefinder 1.20.1 12345678"
+            )
+            return
+
+        version = parts[0]
+        try:
+            seed = int(parts[1])
+        except ValueError:
+            yield event.plain_result("种子必须是整数")
+            return
+
+        chunks = await asyncio.to_thread(_find_slime_chunks, seed, 10)
+        if not chunks:
+            yield event.plain_result("在附近 10 区块内未找到史莱姆区块")
+            return
+
+        lines = [f"Minecraft {version} 种子 {seed} 的史莱姆区块:"]
+        lines.extend(f"区块 ({x}, {z})" for x, z in chunks[:10])
+        if len(chunks) > 10:
+            lines.append(f"... 还有 {len(chunks) - 10} 个区块")
+        yield event.plain_result("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # 入群事件
+    # ------------------------------------------------------------------
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=3)
+    async def on_member_increase(self, event: AstrMessageEvent):
+        """封禁名单拦截与入群欢迎。"""
+        raw = getattr(event.message_obj, "raw_message", None)
+        if not isinstance(raw, dict):
+            return
+        if raw.get("notice_type") != "group_increase":
+            return
+
+        group_id = str(raw.get("group_id") or "")
+        user_id = str(raw.get("user_id") or "")
+        if not group_id or not user_id:
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            return
+
+        if user_id in self._ban_list(group_id):
+            try:
+                await api.kick(int(group_id), int(user_id), reject=True)
+                logger.info(f"[ZM-QQManager] 封禁用户 {user_id} 尝试加入群 {group_id}，已自动踢出")
+            except RuntimeError as exc:
+                logger.warning(f"[ZM-QQManager] 踢出封禁用户失败: {exc}")
+            event.stop_event()
+            return
+
+        welcome = self.settings.group(group_id).get("welcome")
+        if not isinstance(welcome, dict) or not welcome.get("enabled"):
+            return
+
+        content = welcome.get("content") or ""
+        for key, value in {
+            "at": f"[CQ:at,qq={user_id}]",
+            "name": user_id,
+            "user_id": user_id,
+            "group_id": group_id,
+        }.items():
+            content = content.replace("{" + key + "}", value)
+        if content:
+            await api.send_group_msg(int(group_id), content)
+
+    # ------------------------------------------------------------------
+    # 帮助
+    # ------------------------------------------------------------------
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("zmhelp", alias={"群管帮助"})
+    async def cmd_help(self, event: AstrMessageEvent):
+        """/zmhelp - 查看全部命令"""
+        yield event.plain_result(
+            "ZM-QQManager v1.0.1 命令一览\n"
+            "除标注外均仅 AstrBot 管理员可用\n\n"
+            "【禁言】\n"
+            "/mute <成员> [时长]      禁言成员，默认 10 分钟\n"
+            "/unmute <成员>          解除禁言\n"
+            "/mutelist               查看禁言列表与剩余时长\n"
+            "/muteall [时长]          全体禁言，默认永久\n"
+            "/muteall off            解除全体禁言\n\n"
+            "【敏感词】\n"
+            "/sw on [时长]            开启，默认单位分钟\n"
+            "/sw off                 关闭（改时长需先 off 再 on）\n"
+            "/sw add <文本>           添加敏感词\n"
+            "/sw del <文本>           删除敏感词\n"
+            "/sw list                查看自定义词库\n"
+            "/sw mode <custom|library|both>  词库来源\n"
+            "/sw reload              刷新远程词库\n\n"
+            "【检测】\n"
+            "/antiflood on|off       刷屏检测\n"
+            "/cardcheck on|off       群名片广告与敏感词检测\n\n"
+            "【文件】全体成员可用:\n"
+            "/file download <name>       获取临时下载链接\n"
+            "/file log <name> [次数]      查看更新日志\n"
+            "/file list                  查看全部文件\n"
+            "【文件】仅管理员:\n"
+            "/file upload <name> <时长>   上传文件\n"
+            "/file log update <name> <version> <内容>\n"
+            "/file delete <name>         删除文件\n\n"
+            "【成员】\n"
+            "/kick <成员>            踢出成员\n"
+            "/kick <时间>            清理不活跃成员（例: /kick 20d）\n"
+            "/ban <成员>             封禁并踢出\n"
+            "/unban <QQ号>           解除封禁\n"
+            "/banlist                查看封禁列表\n"
+            "/op | /deop <成员>       管理员权限\n"
+            "/title @成员 <文本>      设置群头衔\n\n"
+            "【消息与欢迎】\n"
+            "/recall                 回复消息后撤回\n"
+            "/recall <数量>           批量撤回近期消息\n"
+            "/ad | /ad set <文本> | /ad clear | /ad reset\n"
+            "/adban on|off           广告拦截\n"
+            "/wel set <文本> | on | off | reset | status\n\n"
+            "【其他】\n"
+            "/merge <title> <qq> <内容> [...]  构造合并转发\n"
+            "/kill <成员> <理由>              赛博击杀播报\n"
+            "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf）\n\n"
+            "时长单位: s 秒 / m 分钟 / h 小时 / d 天"
+        )

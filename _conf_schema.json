@@ -1,0 +1,139 @@
+{
+  "flood_threshold": {
+    "description": "刷屏判定：窗口内消息条数阈值",
+    "hint": "在 flood_window 秒内发送达到该条数即视为刷屏",
+    "type": "int",
+    "default": 5
+  },
+  "flood_window": {
+    "description": "刷屏判定：统计窗口（秒）",
+    "type": "int",
+    "default": 10
+  },
+  "flood_repeat_limit": {
+    "description": "刷屏判定：连续重复同一内容的次数阈值",
+    "type": "int",
+    "default": 3
+  },
+  "flood_mute_duration": {
+    "description": "刷屏触发后的禁言时长（秒）",
+    "hint": "设为 0 表示只撤回、不禁言",
+    "type": "int",
+    "default": 600
+  },
+  "flood_recall": {
+    "description": "刷屏触发后是否撤回触发消息",
+    "type": "bool",
+    "default": true
+  },
+  "flood_tip": {
+    "description": "刷屏提示语，占位符：{at} {name} {user_id} {reason} {duration}",
+    "type": "string",
+    "default": "{at} 检测到刷屏（{reason}），已禁言 {duration}"
+  },
+  "sensitive_default_duration": {
+    "description": "敏感词默认禁言时长（分钟）",
+    "hint": "/sw on 未带时长时使用该值",
+    "type": "int",
+    "default": 10
+  },
+  "sensitive_library_urls": {
+    "description": "远程敏感词库地址（每行一个，纯文本、一行一词）",
+    "type": "list",
+    "default": [
+      "https://raw.githubusercontent.com/konsheng/Sensitive-lexicon/main/Vocabulary/其他词库.txt",
+      "https://raw.githubusercontent.com/konsheng/Sensitive-lexicon/main/Vocabulary/政治类.txt",
+      "https://raw.githubusercontent.com/konsheng/Sensitive-lexicon/main/Vocabulary/色情类.txt"
+    ]
+  },
+  "sensitive_whitelist": {
+    "description": "敏感词白名单（命中这些词时不处理，用于修正误伤）",
+    "type": "list",
+    "default": []
+  },
+  "sensitive_tip": {
+    "description": "敏感词提示语，占位符：{at} {name} {user_id} {word} {duration}",
+    "type": "string",
+    "default": "{at} 消息包含敏感内容，已撤回并禁言 {duration}"
+  },
+  "card_check_enabled": {
+    "description": "启用群成员名片检测（检测广告与敏感词）",
+    "type": "bool",
+    "default": false
+  },
+  "card_ad_threshold": {
+    "description": "名片广告评分阈值，达到该分数视为广告名片",
+    "type": "int",
+    "default": 4
+  },
+  "card_action": {
+    "description": "名片违规时的处理方式",
+    "type": "string",
+    "default": "warn",
+    "options": ["warn", "reset", "mute", "kick"]
+  },
+  "card_mute_duration": {
+    "description": "名片违规禁言时长（秒），card_action 为 mute 时生效",
+    "type": "int",
+    "default": 600
+  },
+  "card_tip": {
+    "description": "名片违规提示语，占位符：{at} {name} {user_id} {card} {reason}",
+    "type": "string",
+    "default": "{at} 你的群名片（{card}）疑似包含违规内容（{reason}），请及时修改"
+  },
+  "file_host": {
+    "description": "文件下载服务监听地址",
+    "hint": "0.0.0.0 表示监听所有网卡；仅本机访问可填 127.0.0.1",
+    "type": "string",
+    "default": "0.0.0.0"
+  },
+  "file_port": {
+    "description": "文件下载服务端口",
+    "type": "int",
+    "default": 9977
+  },
+  "file_base_url": {
+    "description": "对外下载地址前缀，例如 http://1.2.3.4:9977 或 https://files.example.com",
+    "hint": "留空则自动使用 file_host:file_port 拼接，公网使用时建议显式填写",
+    "type": "string",
+    "default": ""
+  },
+  "file_server_enabled": {
+    "description": "启用内置文件下载服务",
+    "hint": "关闭后 /file download 无法生成链接",
+    "type": "bool",
+    "default": true
+  },
+  "file_default_ttl": {
+    "description": "文件下载链接默认有效期（秒）",
+    "type": "int",
+    "default": 3600
+  },
+  "kill_template": {
+    "description": "赛博击杀播报模板，占位符：{at} {target} {name} {reason} {operator} {group_id}",
+    "type": "text",
+    "default": "检测到 {name}（{target}）因为 {reason} 被赛博击杀，建议管理踢出此成员"
+  },
+  "kill_notify_all_groups": {
+    "description": "赛博击杀是否向该成员所在的其他群同步播报",
+    "type": "bool",
+    "default": true
+  },
+  "ad_threshold": {
+    "description": "群消息广告评分阈值，达到该分数即判定为广告（/adban on 后生效）",
+    "type": "int",
+    "default": 6
+  },
+  "ad_mute_duration": {
+    "description": "广告拦截触发后的禁言时长（秒）",
+    "hint": "填 0 表示只撤回不禁言",
+    "type": "int",
+    "default": 600
+  },
+  "ad_tip": {
+    "description": "广告拦截提示语，占位符：{at} {name} {user_id} {score} {duration}",
+    "type": "string",
+    "default": "{at} 消息被判定为广告（评分 {score}），已撤回并禁言 {duration}"
+  }
+}
