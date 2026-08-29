@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import shutil
 import time
@@ -14,6 +15,32 @@ from .store import JsonStore, get_data_dir
 from .utils import safe_name
 
 MAX_CHANGELOG_ENTRIES = 200
+DEFAULT_EXPIRED_TIP = "链接已失效"
+DEFAULT_TTL = 600
+DEFAULT_COOLDOWN = 300
+
+# 只接受"点 + 字母数字"的扩展名，其余一律回退 .zip
+_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+
+
+def safe_suffix(original_name: str, source: Path) -> str:
+    """从上传文件名里取出可信的扩展名。
+
+    ``original_name`` 完全由上传方控制，``Path(...).suffix`` 可能带上
+    ``\\``、``/``、``..`` 等分隔符（Windows 上会造成目录穿越），
+    也可能长得离谱，所以这里只放行普通扩展名。
+    """
+    for candidate in (Path(original_name or "").suffix, source.suffix):
+        if candidate and _SUFFIX_RE.match(candidate):
+            return candidate
+    return ".zip"
+
+
+def safe_download_name(name: str) -> str:
+    """清掉下载文件名里的控制字符与引号，避免污染响应头。"""
+    cleaned = "".join(ch for ch in (name or "") if ch.isprintable())
+    cleaned = cleaned.replace('"', "").replace("\\", "").strip()
+    return cleaned or "download"
 
 
 def files_dir() -> Path:
@@ -46,6 +73,14 @@ class FileRepository:
             self.store.set("tokens", tokens)
         return tokens
 
+    def _cooldowns(self) -> Dict[str, Any]:
+        """{QQ号: 上次成功获取下载链接的时间戳}"""
+        bucket = self.store.get("cooldowns")
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self.store.set("cooldowns", bucket)
+        return bucket
+
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         return self._entries().get(name)
 
@@ -71,8 +106,14 @@ class FileRepository:
         if not source.exists():
             return False, f"未找到待上传的文件: {source_path}"
 
-        suffix = Path(original_name).suffix or source.suffix or ".zip"
+        original_name = safe_download_name(original_name)
+        suffix = safe_suffix(original_name, source)
         target = self.dir / f"{clean}{suffix}"
+        # 双保险：落点必须仍在仓库目录内
+        try:
+            target.resolve().relative_to(self.dir.resolve())
+        except ValueError:
+            return False, "文件名不合法，已拒绝保存"
 
         try:
             await asyncio.to_thread(shutil.copy2, str(source), str(target))
@@ -139,7 +180,7 @@ class FileRepository:
         if not path.exists():
             return None, f"文件「{name}」的本体已丢失，请管理员重新上传"
 
-        ttl = int(entry.get("ttl") or 3600)
+        ttl = int(entry.get("ttl") or DEFAULT_TTL)
         token = secrets.token_urlsafe(16)
         tokens = self._tokens()
         tokens[token] = {
@@ -162,24 +203,63 @@ class FileRepository:
             raw = f"http://{host}:{port}"
         return raw.rstrip("/")
 
+    def expired_tip(self) -> str:
+        """链接失效时返回给浏览器的提示语，可在插件配置中自定义。"""
+        return str(self.config.get("file_link_expired_tip") or DEFAULT_EXPIRED_TIP)
+
     def resolve_token(self, token: str) -> Tuple[Optional[Path], Optional[str], str]:
         """校验令牌，返回 (文件路径, 下载名, 错误信息)。"""
+        tip = self.expired_tip()
         item = self._tokens().get(token)
         if not item:
-            return None, None, "链接无效"
+            return None, None, tip
         if item.get("expire", 0) <= int(time.time()):
-            return None, None, "链接已过期"
+            return None, None, tip
 
         entry = self.get(item.get("name", ""))
         if not entry:
-            return None, None, "文件已被删除"
+            return None, None, tip
 
         path = Path(entry.get("path", ""))
         if not path.exists():
-            return None, None, "文件已被删除"
+            return None, None, tip
 
-        download_name = entry.get("original_name") or path.name
+        # 旧数据里可能存着未清洗的文件名，出站前再过一遍
+        download_name = safe_download_name(entry.get("original_name") or path.name)
         return path, download_name, ""
+
+    # ---------- 下载冷却 ----------
+
+    def cooldown_seconds(self) -> int:
+        """下载冷却时长（秒），可在插件配置中自定义，0 表示不限制。"""
+        try:
+            value = int(self.config.get("file_download_cooldown", DEFAULT_COOLDOWN))
+        except (TypeError, ValueError):
+            return DEFAULT_COOLDOWN
+        return max(0, value)
+
+    def cooldown_remaining(self, user_id: str) -> int:
+        """该成员距离下次可下载还剩多少秒，0 表示当前可以下载。"""
+        cooldown = self.cooldown_seconds()
+        if cooldown <= 0:
+            return 0
+        try:
+            last = int(self._cooldowns().get(str(user_id), 0))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, last + cooldown - int(time.time()))
+
+    async def mark_cooldown(self, user_id: str) -> None:
+        """记录一次成功下载，开始计时。"""
+        self._cooldowns()[str(user_id)] = int(time.time())
+        await self.store.save()
+
+    async def reset_cooldown(self, user_id: str) -> bool:
+        """重置某成员的下载冷却，返回其原本是否处于冷却中。"""
+        was_cooling = self.cooldown_remaining(user_id) > 0
+        self._cooldowns().pop(str(user_id), None)
+        await self.store.save()
+        return was_cooling
 
     async def prune_tokens(self) -> None:
         tokens = self._tokens()

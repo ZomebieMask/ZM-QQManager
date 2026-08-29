@@ -101,6 +101,20 @@ def normalize(text: str) -> str:
     return re.sub(r"[\s​‌‍\-_.*·、,，。!！?？~—+/\\|]+", "", lowered)
 
 
+def escape_cq(text: str) -> str:
+    """转义 CQ 码特殊字符。
+
+    昵称、群名片、敏感词等内容会被拼进要发送的消息里，若原样保留 ``[`` ``]``，
+    协议端会把 ``[CQ:at,qq=all]`` 之类的内容当成真正的 CQ 码执行。
+    """
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("[", "&#91;")
+        .replace("]", "&#93;")
+    )
+
+
 def truncate(text: str, limit: int = 60) -> str:
     """截断过长文本，便于写进提示与日志。"""
     text = (text or "").replace("\n", " ").strip()

@@ -35,7 +35,7 @@ class DownloadServer:
             token = request.match_info.get("token", "")
             path, download_name, error = self.repo.resolve_token(token)
             if error:
-                return web.Response(status=404, text=error, content_type="text/plain")
+                return web.Response(status=404, text=_error_page(error), content_type="text/html")
 
             return web.FileResponse(
                 path=str(path),
@@ -82,6 +82,19 @@ class DownloadServer:
             self._runner = None
 
 
+def _error_page(message: str) -> str:
+    """把提示语渲染成一个极简页面，避免浏览器显示成裸文本。"""
+    from html import escape
+
+    return (
+        "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+        "<title>ZM-QQManager</title>"
+        "<body style=\"margin:0;display:flex;align-items:center;justify-content:center;"
+        "height:100vh;font-family:system-ui,sans-serif;color:#333\">"
+        f"<div style=\"font-size:20px\">{escape(message)}</div></body></html>"
+    )
+
+
 def _quote(text: str) -> str:
     from urllib.parse import quote
 
@@ -89,6 +102,10 @@ def _quote(text: str) -> str:
 
 
 def _ascii_fallback(text: str) -> str:
-    """给不支持 filename* 的客户端准备一个纯 ASCII 名字。"""
+    """给不支持 filename* 的客户端准备一个纯 ASCII 名字。
+
+    同时剔除控制字符（含 CR/LF）与引号，避免文件名污染响应头。
+    """
     fallback = (text or "download").encode("ascii", "ignore").decode("ascii")
-    return fallback.replace('"', "") or "download"
+    fallback = "".join(ch for ch in fallback if 0x20 <= ord(ch) < 0x7F)
+    return fallback.replace('"', "").replace("\\", "").strip() or "download"

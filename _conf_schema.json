@@ -108,9 +108,38 @@
   },
   "file_default_ttl": {
     "description": "下载链接默认有效时长（秒）",
-    "hint": "默认 3600 秒（1 小时）",
+    "hint": "默认 600 秒（10 分钟），/file upload 未指定时长时使用该值",
     "type": "int",
-    "default": 3600
+    "default": 600
+  },
+  "file_download_cooldown": {
+    "description": "下载冷却时长（秒）",
+    "hint": "同一成员两次获取下载链接的最小间隔，默认 300 秒（5 分钟）；填 0 表示不限制。可用 /f dl cdreset <成员> 手动重置",
+    "type": "int",
+    "default": 300
+  },
+  "file_cooldown_tip": {
+    "description": "处于下载冷却中的提示语，占位符：{name} {user_id} {remaining} {cooldown}",
+    "type": "string",
+    "default": "下载冷却中，请在 {remaining} 后再试（冷却时长 {cooldown}）"
+  },
+  "file_private_only_tip": {
+    "description": "群内使用 /f dl 时的提示语",
+    "hint": "下载链接只在私聊下发，群里执行下载指令时回复这句话",
+    "type": "string",
+    "default": "需要私聊才可以下载"
+  },
+  "file_link_expired_tip": {
+    "description": "下载链接失效时网页显示的提示语",
+    "hint": "链接过期、无效或文件已被删除时都会显示这句话",
+    "type": "string",
+    "default": "链接已失效"
+  },
+  "merge_admin_only": {
+    "description": "/merge 是否仅管理员可用",
+    "hint": "/merge 可以任意 QQ 号的身份伪造聊天记录（包括群主与管理员），存在冒名风险。默认关闭（全体成员可用），建议在公开群里开启",
+    "type": "bool",
+    "default": false
   },
   "kill_template": {
     "description": "赛博击杀播报模板，占位符：{at} {target} {name} {reason} {operator} {group_id}",

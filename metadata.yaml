@@ -1,6 +1,6 @@
 name: ZM_QQManager
 display_name: ZM-QQManager
-version: 1.0.2
+version: 1.0.3
 author: ZM
 desc: |
   功能强大的 QQ 群管理插件，提供全方位的群管理功能：
@@ -30,7 +30,9 @@ desc: |
   - `/sw add|del|list|mode|reload` - 敏感词库管理
   - `/antiflood on|off` - 刷屏检测开关
   - `/cardcheck on|off` - 群名片检测开关
-  - `/file upload|download|log|list|delete` - 文件仓库
+  - `/file upload|download|log|list|delete` - 文件仓库（`/file` 缩写 `/f`）
+  - `/file log update <name> <version> <内容>`（缩写 `/f l up`）- 更新已上传目标文件的版本字段，内容为补充解释更新内容
+  - `/file download cdreset <成员>`（缩写 `/f dl cdreset`）- 重置成员的下载冷却
   - `/merge <title> <qq> <内容> [...]` - 构造合并转发
   - `/kill <成员> <理由>` - 赛博击杀播报
   - `/kick <成员>` / `/kick <时间>` - 踢出成员 / 清理不活跃成员
@@ -43,8 +45,8 @@ desc: |
   - `/slimefinder` - 史莱姆区块查找
   - `/zmhelp` - 查看全部命令
 
-  管理命令仅 AstrBot 管理员可用；`/file download`、`/file list`、
-  `/file log` 查看对全体群成员开放。
+  管理命令仅 AstrBot 管理员可用；`/file download`（简写 `/f dl`，仅私聊可用）、
+  `/file list`、`/file log` 查看对全体群成员开放。
   时长单位: s 秒 / m 分钟 / h 小时 / d 天。
   支持 {at}、{name}、{user_id}、{group_id} 占位符。
 short_desc: 功能全面的 QQ 群管理插件，支持禁言、敏感词、刷屏检测、文件仓库、广告拦截等

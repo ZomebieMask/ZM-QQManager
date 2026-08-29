@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import List, Optional
 
 from astrbot.api import AstrBotConfig, logger
@@ -29,6 +30,7 @@ from .core.server import DownloadServer
 from .core.store import GroupToggle, JsonStore, coerce_int
 from .core.utils import (
     MAX_DURATION,
+    escape_cq,
     extract_targets,
     format_duration,
     parse_duration,
@@ -40,6 +42,23 @@ QQ_ONLY = "此功能仅支持 QQ (aiocqhttp) 平台"
 
 # /file 的写操作仅管理员可用；download/list/log 查看对全体成员开放。
 ADMIN_FILE_ACTIONS = {"upload", "delete", "del", "rm"}
+
+# /file 子命令缩写，例如 /f dl == /file download、/f l == /file log
+FILE_ACTION_ALIASES = {
+    "dl": "download",
+    "down": "download",
+    "up": "upload",
+    "ls": "list",
+    "l": "log",
+}
+
+# /file log update 的缩写：/f l up <name> <version> <内容>
+LOG_UPDATE_KEYWORDS = {"update", "up"}
+
+# /file download cdreset：重置成员的下载冷却
+CD_RESET_KEYWORDS = {"cdreset", "cdrs", "resetcd"}
+
+DEFAULT_PRIVATE_ONLY_TIP = "需要私聊才可以下载"
 
 _MASK_48 = (1 << 48) - 1
 _JAVA_MULTIPLIER = 0x5DEECE66D
@@ -69,7 +88,7 @@ def _find_slime_chunks(seed: int, search_range: int) -> List[tuple]:
     return found
 
 
-@register("ZM-QQManager", "ZM", "功能全面的 QQ 群管理插件", "1.0.2",
+@register("ZM-QQManager", "ZM", "功能全面的 QQ 群管理插件", "1.0.3",
           "https://github.com/ZomebieMask/ZM-QQManager")
 class ZMQQManager(Star):
     """群管理插件主体。"""
@@ -103,22 +122,53 @@ class ZMQQManager(Star):
         self._pending_upload = {}
         self._message_history = {}
         self._max_history = 200
+        # 持有后台任务引用，否则可能被 GC 掉导致定时解除全体禁言失效
+        self._tasks: set = set()
 
     async def initialize(self):
         """插件加载后启动文件下载服务。"""
         if self.config.get("file_server_enabled", True):
-            self.server = DownloadServer(
-                self.files,
-                host=str(self.config.get("file_host") or "0.0.0.0"),
-                port=coerce_int(self.config.get("file_port"), 9977),
-            )
+            # 强制使用 0.0.0.0 以避免云服务器绑定问题
+            configured_host = str(self.config.get("file_host") or "0.0.0.0")
+            # 云服务器无法直接绑定公网IP，强制使用 0.0.0.0
+            if configured_host not in ("0.0.0.0", "127.0.0.1", "localhost"):
+                logger.warning(f"[ZM-QQManager] 检测到公网IP配置 {configured_host}，自动改为 0.0.0.0")
+                configured_host = "0.0.0.0"
+
+            port = coerce_int(self.config.get("file_port"), 9977)
+
+            self.server = DownloadServer(self.files, host=configured_host, port=port)
             error = await self.server.start()
+
+            # 如果仍然失败，最后尝试回退到 0.0.0.0
+            if error and "could not bind" in str(error) and configured_host != "0.0.0.0":
+                logger.warning(f"[ZM-QQManager] 配置的地址 {configured_host} 不可用，尝试使用 0.0.0.0")
+                self.server = DownloadServer(self.files, host="0.0.0.0", port=port)
+                error = await self.server.start()
+
             if error:
                 logger.warning(f"[ZM-QQManager] {error}")
-        logger.info("[ZM-QQManager] 插件已加载 v1.0.2")
+
+            # 0.0.0.0 只是监听地址，直接写进下载链接的话谁都打不开
+            if "0.0.0.0" in self.files.base_url():
+                logger.warning(
+                    "[ZM-QQManager] 下载链接当前会生成 http://0.0.0.0:%s，外部无法访问；"
+                    "请在插件配置 file_base_url 填写实际可访问的地址（如 http://公网IP:%s）"
+                    % (port, port)
+                )
+        logger.info("[ZM-QQManager] 插件已加载 v1.0.3")
+
+    def _spawn(self, coro) -> None:
+        """启动后台任务并持有引用，直到它自己结束。"""
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def terminate(self):
         """插件卸载时释放端口并落盘。"""
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
         if self.server is not None:
             await self.server.stop()
             self.server = None
@@ -130,15 +180,24 @@ class ZMQQManager(Star):
     # 通用辅助
     # ------------------------------------------------------------------
 
-    def _render(self, template: str, event: AstrMessageEvent, **extra) -> str:
-        """渲染提示语模板中的占位符。"""
+    def _render(self, template: str, event: AstrMessageEvent, escape: bool = True, **extra) -> str:
+        """渲染提示语模板中的占位符。
+
+        除 ``{at}``（由插件自己生成的 CQ 码）外，填入的值都会转义 ``[`` ``]``：
+        昵称、群名片、敏感词等都是成员可控内容，不转义就能靠
+        ``[CQ:at,qq=all]`` 之类的写法借机器人之口执行 CQ 码。
+        设置头衔等"值不会进入消息"的场景可传 ``escape=False``。
+        """
         values = {
-            "at": f"[CQ:at,qq={event.get_sender_id()}]",
             "name": event.get_sender_name() or str(event.get_sender_id()),
             "user_id": str(event.get_sender_id()),
             "group_id": str(event.get_group_id() or ""),
         }
         values.update({k: str(v) for k, v in extra.items()})
+        if escape:
+            values = {k: escape_cq(v) for k, v in values.items()}
+        values["at"] = f"[CQ:at,qq={event.get_sender_id()}]"
+
         text = template or ""
         for key, value in values.items():
             text = text.replace("{" + key + "}", value)
@@ -148,25 +207,27 @@ class ZMQQManager(Star):
         group_id = event.get_group_id()
         return str(group_id) if group_id else None
 
-    def _args(self, event: AstrMessageEvent, command: str) -> List[str]:
-        """去掉命令前缀，返回参数列表。"""
-        text = (event.message_str or "").strip()
-        lowered = text.lower()
-        marker = command.lower()
-        index = lowered.find(marker)
-        if index >= 0:
-            text = text[index + len(marker):]
-        return text.split()
+    def _raw_after(self, event: AstrMessageEvent, *names: str) -> str:
+        """去掉开头的命令名（含 / 等唤醒前缀），返回剩余原始文本。
 
-    def _raw_after(self, event: AstrMessageEvent, command: str) -> str:
-        """去掉命令前缀，返回剩余原始文本。"""
+        只比对消息的第一个 token，不做全文搜索——否则命令名出现在参数里时
+        会把参数截断（例如 /f dl myfile 中的 "file"），别名也会失效
+        （/af on 里根本没有 "antiflood"）。首个 token 不是命令名时，说明框架
+        已经剥掉了命令头，原样返回。
+        """
         text = (event.message_str or "").strip()
-        lowered = text.lower()
-        marker = command.lower()
-        index = lowered.find(marker)
-        if index >= 0:
-            text = text[index + len(marker):]
-        return text.strip()
+        if not text:
+            return ""
+
+        parts = text.split(None, 1)
+        head = parts[0].lstrip("/!#！＃").lower()
+        if head in {name.lower() for name in names}:
+            return parts[1].strip() if len(parts) > 1 else ""
+        return text
+
+    def _args(self, event: AstrMessageEvent, *names: str) -> List[str]:
+        """同 :meth:`_raw_after`，但按空白切分成参数列表。"""
+        return self._raw_after(event, *names).split()
 
     def _record_message(self, event: AstrMessageEvent) -> None:
         group_id = self._require_group(event)
@@ -375,7 +436,7 @@ class ZMQQManager(Star):
         state = self.settings.group(group_id)
         state["muteall_until"] = int(time.time()) + duration
         await self.settings.save()
-        asyncio.create_task(self._auto_unmute_all(event, group_id, duration))
+        self._spawn(self._auto_unmute_all(event, group_id, duration))
         yield event.plain_result(
             f"已开启全体禁言 {format_duration(duration)}，到期后自动解除"
         )
@@ -413,9 +474,7 @@ class ZMQQManager(Star):
             yield event.plain_result(ADMIN_ONLY)
             return
 
-        raw = self._raw_after(event, "sensitive-words")
-        if raw == (event.message_str or "").strip():
-            raw = self._raw_after(event, "sw")
+        raw = self._raw_after(event, "sensitive-words", "sw")
 
         parts = raw.split()
         action = parts[0].lower() if parts else "status"
@@ -539,9 +598,7 @@ class ZMQQManager(Star):
             yield event.plain_result(ADMIN_ONLY)
             return
 
-        args = self._args(event, "antiflood")
-        if not args:
-            args = self._args(event, "flood") or self._args(event, "af")
+        args = self._args(event, "antiflood", "flood", "af")
         action = args[0].lower() if args else "status"
 
         if action == "on":
@@ -590,7 +647,7 @@ class ZMQQManager(Star):
             yield event.plain_result(ADMIN_ONLY)
             return
 
-        args = self._args(event, "cardcheck") or self._args(event, "cc")
+        args = self._args(event, "cardcheck", "cc")
         action = args[0].lower() if args else "status"
 
         if action == "on":
@@ -627,14 +684,15 @@ class ZMQQManager(Star):
         download/list/log 查看对全体群成员开放，
         upload/delete/log update 仅 AstrBot 管理员可用。
         """
-        raw = self._raw_after(event, "file")
-        if raw == (event.message_str or "").strip():
-            raw = self._raw_after(event, "f")
+        raw = self._raw_after(event, "file", "f")
 
         parts = raw.split()
         action = parts[0].lower() if parts else "help"
+        action = FILE_ACTION_ALIASES.get(action, action)
 
-        is_log_update = action == "log" and len(parts) > 1 and parts[1].lower() == "update"
+        is_log_update = (
+            action == "log" and len(parts) > 1 and parts[1].lower() in LOG_UPDATE_KEYWORDS
+        )
         if (action in ADMIN_FILE_ACTIONS or is_log_update) and not event.is_admin():
             label = "log update" if is_log_update else action
             yield event.plain_result(f"/file {label} 仅 AstrBot 管理员可用")
@@ -679,15 +737,19 @@ class ZMQQManager(Star):
             yield event.plain_result(message)
             return
 
+        cooldown = self.files.cooldown_seconds()
         yield event.plain_result(
             "文件仓库用法（/file 可简写为 /f）\n"
-            "/file download <name>      获取临时下载链接\n"
-            "/file log <name> [次数]     查看更新日志\n"
-            "/file list                 查看全部文件\n"
+            "/file download <name>      获取临时下载链接（简写 /f dl，仅私聊可用）\n"
+            "/file log <name> [次数]     查看更新日志（简写 /f l）\n"
+            "/file list                 查看全部文件（简写 /f ls）\n"
             "以下仅管理员可用:\n"
-            "/file upload <name> <时长>  上传文件（随后发送文件即可）\n"
-            "/file log update <name> <version> <内容>  记录更新\n"
+            "/file upload <name> <时长>  上传文件（简写 /f up，随后发送文件即可）\n"
+            "/file log update <name> <version> <内容>  简写 /f l up\n"
+            "                           更新已上传目标文件的版本字段，内容为补充解释更新内容\n"
+            "/file download cdreset <成员>  重置成员的下载冷却（简写 /f dl cdreset）\n"
             "/file delete <name>        删除文件（可简写为 del）\n"
+            f"下载冷却: {'不限制' if cooldown <= 0 else format_duration(cooldown)}\n"
             "时长支持: 30s / 10m / 2h / 7d"
         )
 
@@ -704,13 +766,20 @@ class ZMQQManager(Star):
             yield event.plain_result("文件名不合法，仅允许中英文、数字、-、_、.")
             return
 
-        ttl = coerce_int(self.config.get("file_default_ttl"), 3600)
+        ttl = coerce_int(self.config.get("file_default_ttl"), 600)
         if len(args) > 1:
             parsed = parse_duration(args[1], default_unit="m")
             if parsed is None:
                 yield event.plain_result("时长格式错误。例: /file upload guoclient 3m")
                 return
             ttl = parsed if parsed > 0 else MAX_DURATION
+
+        # 清掉超时未发送文件的登记，避免字典无限增长
+        now = time.time()
+        for stale in [
+            k for k, item in self._pending_upload.items() if now - item["created"] > 300
+        ]:
+            self._pending_upload.pop(stale, None)
 
         key = f"{event.get_group_id() or 'private'}:{event.get_sender_id()}"
         self._pending_upload[key] = {
@@ -727,47 +796,128 @@ class ZMQQManager(Star):
         )
 
     async def _file_download(self, event: AstrMessageEvent, args: List[str]):
-        """/file download <name> - 签发临时下载链接。"""
+        """/file download <name> - 签发临时下载链接（仅私聊）。
+
+        另有 /file download cdreset <成员>（简写 /f dl cdreset）用于重置下载冷却。
+        """
+        if args and args[0].lower() in CD_RESET_KEYWORDS:
+            async for result in self._file_cd_reset(event, args[1:]):
+                yield result
+            return
+
+        # 下载链接只在私聊下发，群内一律只给提示语
+        if event.get_group_id():
+            tip = str(self.config.get("file_private_only_tip") or DEFAULT_PRIVATE_ONLY_TIP)
+            yield event.plain_result(tip)
+            return
+
         if not args:
-            yield event.plain_result("用法: /file download <name>")
+            yield event.plain_result("用法: /file download <name>（可简写为 /f dl <name>）")
             return
 
         if not self.config.get("file_server_enabled", True):
             yield event.plain_result("文件下载服务未启用，请在插件配置中开启 file_server_enabled")
             return
 
-        url, error = await self.files.issue_token(args[0], str(event.get_sender_id()))
+        # 管理员不受下载冷却限制
+        user_id = str(event.get_sender_id())
+        if not event.is_admin():
+            remaining = self.files.cooldown_remaining(user_id)
+            if remaining > 0:
+                tip = str(
+                    self.config.get("file_cooldown_tip")
+                    or "下载冷却中，请在 {remaining} 后再试（冷却时长 {cooldown}）"
+                )
+                yield event.plain_result(
+                    self._render(
+                        tip,
+                        event,
+                        remaining=format_duration(remaining),
+                        cooldown=format_duration(self.files.cooldown_seconds()),
+                    )
+                )
+                return
+
+        url, error = await self.files.issue_token(args[0], user_id)
         if error:
             yield event.plain_result(error)
             return
 
+        cooldown_note = ""
+        if not event.is_admin():
+            cooldown = self.files.cooldown_seconds()
+            if cooldown > 0:
+                await self.files.mark_cooldown(user_id)
+                cooldown_note = f"\n下载冷却: {format_duration(cooldown)}，冷却结束后才能再次获取链接"
+
         entry = self.files.get(args[0]) or {}
-        ttl = int(entry.get("ttl") or 3600)
+        ttl = int(entry.get("ttl") or 600)
         version = entry.get("version") or "未标记版本"
         yield event.plain_result(
             f"文件: {args[0]}（{version}，{format_size(entry.get('size', 0))}）\n"
             f"下载链接: {url}\n"
             f"有效期: {format_duration(ttl)}，过期后需重新获取"
+            f"{cooldown_note}"
         )
+
+    async def _file_cd_reset(self, event: AstrMessageEvent, args: List[str]):
+        """/file download cdreset <成员> - 重置成员的下载冷却（仅管理员）。"""
+        if not event.is_admin():
+            yield event.plain_result("/file download cdreset 仅 AstrBot 管理员可用")
+            return
+
+        targets = extract_targets(event, " ".join(args))
+        if not targets:
+            yield event.plain_result(
+                "用法: /file download cdreset <成员>（简写 /f dl cdreset <成员>）\n"
+                "例: /f dl cdreset @某人、/f dl cdreset 12345678"
+            )
+            return
+
+        cooldown = self.files.cooldown_seconds()
+        cleared, idle = [], []
+        for user_id in targets:
+            if await self.files.reset_cooldown(user_id):
+                cleared.append(user_id)
+            else:
+                idle.append(user_id)
+
+        lines = []
+        if cleared:
+            lines.append(f"已重置下载冷却: {', '.join(cleared)}")
+        if idle:
+            lines.append(f"本就不在冷却中（已确保可下载）: {', '.join(idle)}")
+        lines.append(
+            f"当前冷却时长: {'不限制' if cooldown <= 0 else format_duration(cooldown)}"
+        )
+        logger.info(
+            f"[ZM-QQManager] {event.get_sender_id()} 重置了 {', '.join(targets)} 的下载冷却"
+        )
+        yield event.plain_result("\n".join(lines))
 
     async def _file_log(self, event: AstrMessageEvent, args: List[str], raw: str):
         """/file log <name> [次数] 与 /file log update <name> <version> <内容>"""
         if not args:
-            yield event.plain_result("用法: /file log <name> [次数] 或 /file log update <name> <version> <内容>")
+            yield event.plain_result(
+                "用法: /file log <name> [次数]（简写 /f l）\n"
+                "      /file log update <name> <version> <内容>（简写 /f l up）"
+            )
             return
 
-        if args[0].lower() == "update":
+        if args[0].lower() in LOG_UPDATE_KEYWORDS:
             if not event.is_admin():
                 yield event.plain_result("/file log update 仅 AstrBot 管理员可用")
                 return
             if len(args) < 4:
                 yield event.plain_result(
-                    "用法: /file log update <name> <version> <内容>\n"
+                    "用法: /file log update <name> <version> <内容>（简写 /f l up）\n"
+                    "说明: 更新已上传目标文件的版本字段，内容为补充解释更新内容\n"
                     "例: /file log update guoclient 1.2.0 修复了启动崩溃"
                 )
                 return
             name, version = args[1], args[2]
-            marker = f"update {name} {version}"
+            # args[0] 是用户实际输入的关键字（update 或缩写 up），据此在原文中定位内容
+            marker = f"{args[0]} {name} {version}"
             index = raw.find(marker)
             contents = raw[index + len(marker):].strip() if index >= 0 else " ".join(args[3:])
             ok, message = await self.files.add_changelog(
@@ -812,7 +962,23 @@ class ZMQQManager(Star):
                         f"更新内容: {record.get('contents', '')}",
                     )
                 )
-            if await api.send_forward(int(group_id), nodes) is not None:
+            # 卡片名称与目标文件保持一致（对应 /merge 的 <标题> 参数）
+            news = [
+                {
+                    "text": f"v{record.get('version', '?')}: "
+                    f"{truncate(record.get('contents', ''), 30)}"
+                }
+                for record in records[:3]
+            ]
+            sent = await api.send_forward(
+                int(group_id),
+                nodes,
+                source=name,
+                news=news,
+                summary=f"查看 {len(records)} 条更新记录",
+                prompt=f"[{name}]",
+            )
+            if sent is not None:
                 return
 
         lines = [f"【{title}】"]
@@ -847,16 +1013,52 @@ class ZMQQManager(Star):
         path = getattr(file_component, "file_", None) or getattr(file_component, "file", None)
         original = getattr(file_component, "name", None) or "upload.zip"
 
-        if not path:
+        # 必须先把文件落到本地，再去撤回消息 / 删除群文件，否则来不及下载
+        if not path or not Path(str(path)).exists():
             try:
                 path = await file_component.get_file()
             except Exception as exc:
                 logger.error(f"[ZM-QQManager] 获取文件失败: {exc}")
 
-        if not path:
+        if not path or not Path(str(path)).exists():
             await event.send(event.plain_result(f"未能获取文件「{pending['name']}」的本地路径，上传失败"))
             event.stop_event()
             return
+
+        # 群内上传：机器人必须能把文件从群里清掉（群主撤回 / 管理员删群文件），
+        # 否则视为上传失败，不入库。
+        group_id_str = str(event.get_group_id() or "")
+        cleanup = ""
+        if group_id_str:
+            api = OneBotApi(event)
+            bot_role = "member"
+            bot_id = str(event.get_self_id() or "")
+            if api.available and bot_id:
+                info = await api.member_info(int(group_id_str), int(bot_id))
+                bot_role = str(info.get("role") or "member")
+
+            if bot_role == "owner":
+                await api.try_call("delete_msg", message_id=event.message_obj.message_id)
+                # 群主同样有权删群文件，顺手清理，失败不影响结果
+                await self._delete_group_file(api, group_id_str, file_component)
+                cleanup = "\n已撤回群内的文件消息"
+                logger.info(f"[ZM-QQManager] 机器人是群主，已撤回群 {group_id_str} 的上传消息")
+            elif bot_role == "admin":
+                if not await self._delete_group_file(api, group_id_str, file_component):
+                    await event.send(event.plain_result("上传失败：删除群文件失败，请手动删除后重试"))
+                    event.stop_event()
+                    return
+                cleanup = "\n已删除群文件中的该文件"
+                logger.info(f"[ZM-QQManager] 机器人是群管理员，已删除群 {group_id_str} 的群文件")
+            else:
+                await event.send(
+                    event.plain_result(
+                        "上传失败：机器人既不是群主也不是群管理员，"
+                        "无法撤回消息或删除群文件。请提升机器人权限后重试。"
+                    )
+                )
+                event.stop_event()
+                return
 
         ok, message = await self.files.save_upload(
             pending["name"], str(path), str(original), str(event.get_sender_id()), pending["ttl"]
@@ -864,55 +1066,39 @@ class ZMQQManager(Star):
         detail = ""
         if ok:
             detail = (
-                f"\n下载命令: /file download {pending['name']}"
+                f"\n下载命令: /f dl {pending['name']}（需私聊机器人）"
                 f"\n链接有效期: {format_duration(pending['ttl'])}"
+                f"{cleanup}"
             )
-
-        # 如果上传成功，且用户是管理员，处理文件删除逻辑
-        if ok and event.is_admin():
-            group_id_str = str(event.get_group_id() or "")
-            user_id = str(event.get_sender_id())
-
-            if group_id_str and file_component:
-                # 尝试获取群信息和机器人角色
-                try:
-                    bot_id = str(event.get_self_id() or "")
-                    if bot_id:
-                        bot_info = await api.member_info(int(group_id_str), int(bot_id))
-                        bot_role = str(bot_info.get("role", "member"))
-
-                        user_info = await api.member_info(int(group_id_str), int(user_id))
-                        user_role = str(user_info.get("role", "member"))
-
-                        should_delete = False
-                        use_recall = False
-
-                        # 如果机器人是群主，撤回管理员发的文件消息
-                        if bot_role == "owner":
-                            use_recall = True
-                            should_delete = True
-                        # 如果机器人是管理员
-                        elif bot_role == "admin":
-                            # 上传者是群主或其他管理员，直接删除群文件
-                            if user_role in {"owner", "admin"}:
-                                should_delete = True
-
-                        if should_delete:
-                            if use_recall:
-                                # 撤回消息
-                                await api.try_call("delete_msg", message_id=event.message_obj.message_id)
-                                logger.info(f"[ZM-QQManager] 机器人是群主，已撤回管理员上传的文件消息")
-                            else:
-                                # 删除群文件
-                                file_id = getattr(file_component, "id", None) or getattr(file_component, "file_id", None)
-                                if file_id:
-                                    await api.try_call("delete_group_file", group_id=int(group_id_str), file_id=file_id)
-                                    logger.info(f"[ZM-QQManager] 机器人是管理员，已删除群文件")
-                except Exception as exc:
-                    logger.warning(f"[ZM-QQManager] 处理文件删除时出错: {exc}")
 
         await event.send(event.plain_result(message + detail))
         event.stop_event()
+
+    async def _delete_group_file(self, api: OneBotApi, group_id: str, file_component) -> bool:
+        """删除群文件，兼容需要 busid 的协议端。"""
+        file_id = (
+            getattr(file_component, "file_id", None)
+            or getattr(file_component, "id", None)
+        )
+        if not file_id:
+            logger.warning("[ZM-QQManager] 未能取得群文件 file_id，无法删除群文件")
+            return False
+
+        busid = getattr(file_component, "busid", None)
+        if busid is not None:
+            result = await api.try_call(
+                "delete_group_file",
+                group_id=int(group_id),
+                file_id=str(file_id),
+                busid=int(busid),
+            )
+            if result is not None:
+                return True
+
+        result = await api.try_call(
+            "delete_group_file", group_id=int(group_id), file_id=str(file_id)
+        )
+        return result is not None
 
     # ------------------------------------------------------------------
     # 合并转发伪造
@@ -926,6 +1112,12 @@ class ZMQQManager(Star):
             yield event.plain_result(ADMIN_ONLY)
             return
 
+        # 该命令能以任意 QQ 号的身份伪造聊天记录（含群主、管理员），
+        # 默认沿用"全体可用"，需要收紧时把 merge_admin_only 打开。
+        if self.config.get("merge_admin_only", False) and not event.is_admin():
+            yield event.plain_result("/merge 仅 AstrBot 管理员可用")
+            return
+
         api = OneBotApi(event)
         if not api.available:
             yield event.plain_result(QQ_ONLY)
@@ -934,9 +1126,10 @@ class ZMQQManager(Star):
         parts = self._raw_after(event, "merge").split()
         if len(parts) < 3:
             yield event.plain_result(
-                "用法: /merge <title> <qq> <内容> [<qq> <内容> ...]\n"
-                "例: /merge 乐子 3332 你好呀\n"
-                "多人: /merge 乐子 3332 你好 4443 在的"
+                "用法: /merge <标题> <qq> <内容> [<qq> <内容> ...]\n"
+                "标题即卡片上显示的名字（替换默认的「群聊的聊天记录」），不能带空格\n"
+                "例: /merge 关于一个故事 3332 你好呀\n"
+                "多人: /merge 关于一个故事 3332 你好 4443 在的"
             )
             return
 
@@ -962,12 +1155,27 @@ class ZMQQManager(Star):
             yield event.plain_result("未解析到有效的 <qq> <内容> 组合，请检查格式")
             return
 
-        nodes = [forward_node(str(event.get_self_id() or "10000"), "群聊的聊天记录", f"【{title}】")]
+        nodes = []
         for qq, content in entries:
             name = await resolve_member_name(api, int(group_id), qq)
             nodes.append(forward_node(qq, name, content))
 
-        if await api.send_forward(int(group_id), nodes) is None:
+        # title 直接作为卡片标题（替换默认的「群聊的聊天记录」），
+        # news 为卡片中间的摘要行，取前几条内容预览。
+        news = [
+            {"text": f"{await resolve_member_name(api, int(group_id), qq)}: {content}"}
+            for qq, content in entries[:3]
+        ]
+
+        sent = await api.send_forward(
+            int(group_id),
+            nodes,
+            source=title,
+            news=news,
+            summary=f"查看 {len(entries)} 条转发消息",
+            prompt=f"[{title}]",
+        )
+        if sent is None:
             yield event.plain_result("合并转发发送失败，可能是协议端不支持或内容被拦截")
             return
 
@@ -1027,11 +1235,12 @@ class ZMQQManager(Star):
             name = await resolve_member_name(api, int(groups[0]), target)
 
         message = template
+        # name（群名片）与 reason（命令原文）都可能带 [CQ:...]，填进消息前先转义
         for key, value in {
             "at": f"[CQ:at,qq={target}]",
             "target": target,
-            "name": name,
-            "reason": reason,
+            "name": escape_cq(name),
+            "reason": escape_cq(reason),
             "operator": str(event.get_sender_id()),
             "group_id": str(current_group or ""),
         }.items():
@@ -1495,7 +1704,8 @@ class ZMQQManager(Star):
             title = raw
             for token in targets:
                 title = title.replace(token, " ")
-            title = self._render(" ".join(title.split()).strip(), event)
+            # 头衔是 API 参数、不进消息文本，转义反而会把实体码写进头衔
+            title = self._render(" ".join(title.split()).strip(), event, escape=False)
             if not title:
                 yield event.plain_result("请提供头衔文本，或使用 /title unset @成员 取消")
                 return
@@ -1534,11 +1744,15 @@ class ZMQQManager(Star):
                 target_id = getattr(component, "id", None)
                 if target_id is None:
                     continue
-                try:
-                    await api.recall(target_id)
-                except RuntimeError as exc:
-                    yield event.plain_result(f"撤回失败: {exc}")
+                ok, error = await api.recall_detail(target_id)
+                if not ok:
+                    yield event.plain_result(
+                        f"撤回失败: {error or '协议端未返回原因'}"
+                        "（消息可能已被撤回，或机器人权限不足）"
+                    )
                     return
+                # 顺带撤回 /recall 指令本身
+                await api.try_call("delete_msg", message_id=event.message_obj.message_id)
                 return
 
         args = self._args(event, "recall")
@@ -1564,32 +1778,111 @@ class ZMQQManager(Star):
                 include_bot = False
 
         bot_id = str(event.get_self_id() or "")
-        history = self._message_history.get(group_id, [])
-        # 跳过 /recall 自身
-        pending = [
-            item for item in history if item["message_id"] != event.message_obj.message_id
-        ]
+        self_message_id = event.message_obj.message_id
 
-        # 如果不包含机器人，过滤掉机器人的消息
-        if not include_bot and bot_id:
-            pending = [item for item in pending if item["user_id"] != bot_id]
-
-        pending = pending[-count:]
+        pending, source = await self._recall_targets(
+            api, group_id, count, include_bot, bot_id, self_message_id
+        )
 
         if not pending:
-            yield event.plain_result("没有可撤回的记录（插件仅记录启动后的消息）")
+            yield event.plain_result(
+                "没有可撤回的消息（协议端未返回历史记录，且插件内存中也没有记录）"
+            )
             return
 
         removed = 0
+        failures: List[str] = []
+        # 从新到旧逐条撤回
         for item in reversed(pending):
-            if await api.try_call("delete_msg", message_id=item["message_id"]) is not None:
+            ok, error = await api.recall_detail(item["message_id"])
+            if ok:
                 removed += 1
-        await api.try_call("delete_msg", message_id=event.message_obj.message_id)
+                continue
+            who = item.get("user_id") or "?"
+            failures.append(f"{item['message_id']}(发送者 {who}): {error or '协议端未返回原因'}")
 
-        if not removed:
-            yield event.plain_result("撤回失败，消息可能已超过 2 分钟撤回时限")
+        await api.try_call("delete_msg", message_id=self_message_id)
+
+        total = len(pending)
+        logger.info(
+            f"[ZM-QQManager] 群 {group_id} 批量撤回：来源 {source}，"
+            f"目标 {total} 条，成功 {removed} 条，失败 {len(failures)} 条"
+        )
+        for line in failures:
+            logger.warning(f"[ZM-QQManager] 群 {group_id} 撤回失败 {line}")
+
+        if not failures:
+            yield event.plain_result(f"已撤回 {removed} 条消息")
             return
-        logger.info(f"[ZM-QQManager] 群 {group_id} 批量撤回 {removed} 条消息")
+
+        report = [f"撤回完成：成功 {removed} 条，失败 {len(failures)} 条（共 {total} 条）"]
+        for line in failures[:5]:
+            report.append(f"· {line}")
+        if len(failures) > 5:
+            report.append(f"· 其余 {len(failures) - 5} 条失败详情见日志")
+        report.append("失败通常是消息已被撤回/已过期，或机器人权限不足（需群管理员或群主）")
+        yield event.plain_result("\n".join(report))
+
+    async def _recall_targets(
+        self,
+        api: OneBotApi,
+        group_id: str,
+        count: int,
+        include_bot: bool,
+        bot_id: str,
+        skip_message_id,
+    ) -> tuple:
+        """挑出待撤回的消息，返回 (消息列表, 来源说明)。
+
+        优先向协议端拉取群历史记录——这样机器人自己发的消息、以及插件启动前
+        的消息都能撤回；协议端不支持时退回插件内存里的记录。
+        """
+        raw = await api.group_msg_history(int(group_id), max(count * 2, 20))
+        source = "协议端历史记录"
+        items: List[dict] = []
+
+        for message in raw:
+            if not isinstance(message, dict):
+                continue
+            message_id = message.get("message_id")
+            if message_id is None:
+                continue
+            sender = message.get("sender")
+            user_id = ""
+            if isinstance(sender, dict):
+                user_id = str(sender.get("user_id") or "")
+            if not user_id:
+                user_id = str(message.get("user_id") or "")
+            items.append({"message_id": message_id, "user_id": user_id})
+
+        if not items:
+            source = "插件内存记录"
+            items = [
+                {"message_id": item["message_id"], "user_id": item["user_id"]}
+                for item in self._message_history.get(group_id, [])
+            ]
+
+        # 去重并保持时间顺序（旧 → 新）
+        seen = set()
+        ordered: List[dict] = []
+        for item in items:
+            key = str(item["message_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+
+        # 跳过 /recall 指令自身，它在最后单独撤回
+        ordered = [
+            item
+            for item in ordered
+            if str(item["message_id"]) != str(skip_message_id)
+        ]
+
+        if not include_bot and bot_id:
+            ordered = [item for item in ordered if item["user_id"] != bot_id]
+
+        return ordered[-count:], source
 
     # ------------------------------------------------------------------
     # 群广告与欢迎
@@ -1747,9 +2040,7 @@ class ZMQQManager(Star):
     @filter.command("slimefinder", alias={"sf"})
     async def cmd_slimefinder(self, event: AstrMessageEvent):
         """/slimefinder <version> <seed> - 查找史莱姆区块"""
-        raw = self._raw_after(event, "slimefinder")
-        if raw == (event.message_str or "").strip():
-            raw = self._raw_after(event, "sf")
+        raw = self._raw_after(event, "slimefinder", "sf")
         parts = raw.split()
 
         if len(parts) < 2:
@@ -1830,34 +2121,39 @@ class ZMQQManager(Star):
     @filter.command("zmhelp", alias={"群管帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         """/zmhelp - 查看全部命令"""
+        cooldown = self.files.cooldown_seconds()
         yield event.plain_result(
-            "ZM-QQManager v1.0.2 命令一览\n"
-            "除标注外均仅 AstrBot 管理员可用\n\n"
+            "ZM-QQManager v1.0.3 命令一览\n"
+            "除标注外均仅 AstrBot 管理员可用；括号内为命令缩写\n\n"
             "【禁言】\n"
             "/mute <成员> [时长]      禁言成员，默认 10 分钟\n"
             "/unmute <成员>          解除禁言\n"
             "/mutelist               查看禁言列表与剩余时长\n"
             "/muteall [时长]          全体禁言，默认永久\n"
             "/muteall off            解除全体禁言\n\n"
-            "【敏感词】\n"
+            "【敏感词】/sensitive-words 缩写 /sw\n"
             "/sw on [时长]            开启，默认单位分钟\n"
             "/sw off                 关闭（改时长需先 off 再 on）\n"
             "/sw add <文本>           添加敏感词\n"
-            "/sw del <文本>           删除敏感词\n"
+            "/sw del <文本>           删除敏感词（缩写 delete/remove/rm）\n"
             "/sw list                查看自定义词库\n"
             "/sw mode <custom|library|both>  词库来源\n"
             "/sw reload              刷新远程词库\n\n"
             "【检测】\n"
-            "/antiflood on|off       刷屏检测\n"
-            "/cardcheck on|off       群名片广告与敏感词检测\n\n"
-            "【文件】/file 可简写为 /f，全体成员可用:\n"
-            "/file download <name>       获取临时下载链接\n"
-            "/file log <name> [次数]      查看更新日志\n"
-            "/file list                  查看全部文件\n"
+            "/antiflood on|off       刷屏检测（缩写 /flood、/af）\n"
+            "/cardcheck on|off       群名片广告与敏感词检测（缩写 /cc）\n\n"
+            "【文件】/file 缩写 /f，以下全体成员可用:\n"
+            "/file download <name>       获取临时下载链接（缩写 /f dl，仅私聊）\n"
+            "/file log <name> [次数]      查看更新日志（缩写 /f l）\n"
+            "/file list                  查看全部文件（缩写 /f ls）\n"
             "【文件】仅管理员:\n"
-            "/file upload <name> <时长>   上传文件\n"
-            "/file log update <name> <version> <内容>\n"
-            "/file delete <name>         删除文件（delete 可简写为 del）\n\n"
+            "/file upload <name> <时长>   上传文件（缩写 /f up）\n"
+            "/file log update <name> <version> <内容>   缩写 /f l up <name> <version> <内容>\n"
+            "                            更新已上传目标文件的版本字段，内容为补充解释更新内容\n"
+            "/file download cdreset <成员>  重置该成员的下载冷却（缩写 /f dl cdreset <成员>）\n"
+            "/file delete <name>         删除文件（缩写 /f del、/f rm）\n"
+            f"下载冷却: {'不限制' if cooldown <= 0 else format_duration(cooldown)}"
+            "（可在插件配置 file_download_cooldown 中自定义）\n\n"
             "【成员】\n"
             "/kick <成员>            踢出成员\n"
             "/kick <时间>            清理不活跃成员（例: /kick 20d）\n"
@@ -1873,8 +2169,9 @@ class ZMQQManager(Star):
             "/adban on|off           广告拦截\n"
             "/wel set <文本> | on | off | reset | status\n\n"
             "【其他】\n"
-            "/merge <title> <qq> <内容> [...]  构造合并转发（全体可用）\n"
+            "/merge <标题> <qq> <内容> [...]  构造合并转发，标题即卡片名（全体可用）\n"
             "/kill <成员> <理由>              赛博击杀播报\n"
-            "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf，全体可用）\n\n"
+            "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf，全体可用）\n"
+            "/zmhelp                         本帮助（缩写 /群管帮助）\n\n"
             "时长单位: s 秒 / m 分钟 / h 小时 / d 天"
         )

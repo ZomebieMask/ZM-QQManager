@@ -47,20 +47,39 @@ class JsonStore:
         except Exception as exc:
             logger.error(f"[ZM-QQManager] 读取 {self.path.name} 失败: {exc}")
 
-    def _write(self) -> None:
+    def _write(self, payload: str) -> None:
+        tmp = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self._data, handle, ensure_ascii=False, indent=2)
+                handle.write(payload)
             os.replace(tmp, self.path)
+            tmp = None
         except Exception as exc:
             logger.error(f"[ZM-QQManager] 写入 {self.path.name} 失败: {exc}")
+        finally:
+            # 写失败时别把 .tmp 残留在数据目录里
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     async def save(self) -> None:
-        """把当前内容落盘。"""
+        """把当前内容落盘。
+
+        序列化必须留在事件循环里同步完成：若丢进线程里 dump，别的协程正好
+        在改同一个 dict 就会抛 "dictionary changed size during iteration"，
+        整次保存直接丢失。
+        """
+        try:
+            payload = json.dumps(self._data, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.error(f"[ZM-QQManager] 序列化 {self.path.name} 失败: {exc}")
+            return
         async with self._lock:
-            await asyncio.to_thread(self._write)
+            await asyncio.to_thread(self._write, payload)
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)

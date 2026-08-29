@@ -1,7 +1,7 @@
 """OneBot v11 (aiocqhttp) 协议端调用封装。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 
@@ -70,6 +70,36 @@ class OneBotApi:
     async def recall(self, message_id: Any) -> None:
         await self.call("delete_msg", message_id=message_id)
 
+    async def recall_detail(self, message_id: Any) -> Tuple[bool, str]:
+        """撤回单条消息，返回 (是否成功, 失败原因)。"""
+        try:
+            await self.call("delete_msg", message_id=message_id)
+            return True, ""
+        except RuntimeError as exc:
+            return False, str(exc)
+
+    async def group_msg_history(self, group_id: int, count: int = 20) -> List[Dict[str, Any]]:
+        """取群最近的聊天记录（旧 → 新），协议端不支持时返回空列表。
+
+        各协议端对参数的要求不一致，逐个尝试：NapCat / Lagrange 接受
+        count；go-cqhttp 需要 message_seq；个别实现只认 group_id。
+        """
+        attempts = (
+            {"group_id": int(group_id), "count": int(count)},
+            {"group_id": int(group_id), "message_seq": 0, "count": int(count)},
+            {"group_id": int(group_id)},
+        )
+        for payload in attempts:
+            result = await self.try_call("get_group_msg_history", **payload)
+            messages: Any = None
+            if isinstance(result, dict):
+                messages = result.get("messages")
+            elif isinstance(result, list):
+                messages = result
+            if isinstance(messages, list) and messages:
+                return messages
+        return []
+
     async def set_admin(self, group_id: int, user_id: int, enable: bool) -> None:
         await self.call(
             "set_group_admin", group_id=int(group_id), user_id=int(user_id), enable=bool(enable)
@@ -106,8 +136,44 @@ class OneBotApi:
     async def send_group_msg(self, group_id: int, message: Any) -> Optional[Any]:
         return await self.try_call("send_group_msg", group_id=int(group_id), message=message)
 
-    async def send_forward(self, group_id: int, nodes: List[Dict[str, Any]]) -> Optional[Any]:
-        """发送合并转发消息。"""
+    async def send_forward(
+        self,
+        group_id: int,
+        nodes: List[Dict[str, Any]],
+        source: Optional[str] = None,
+        summary: Optional[str] = None,
+        prompt: Optional[str] = None,
+        news: Optional[List[Dict[str, str]]] = None,
+    ) -> Optional[Any]:
+        """发送合并转发消息。
+
+        source/summary/prompt/news 用于自定义卡片外观（NapCat、Lagrange 等支持）：
+        - source: 卡片标题，默认「群聊的聊天记录」
+        - news:   卡片中间的摘要行
+        - summary: 卡片底部「查看 N 条转发消息」
+        - prompt: 会话列表里的外显文本，默认「[聊天记录]」
+        协议端若不支持这些字段，会自动退回不带自定义样式的发送。
+        """
+        extra: Dict[str, Any] = {}
+        if source:
+            extra["source"] = source
+        if news:
+            extra["news"] = news
+        if summary:
+            extra["summary"] = summary
+        if prompt:
+            extra["prompt"] = prompt
+
+        if extra:
+            result = await self.try_call(
+                "send_group_forward_msg",
+                group_id=int(group_id),
+                messages=nodes,
+                **extra,
+            )
+            if result is not None:
+                return result
+
         return await self.try_call(
             "send_group_forward_msg", group_id=int(group_id), messages=nodes
         )
