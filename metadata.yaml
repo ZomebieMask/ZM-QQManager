@@ -32,7 +32,7 @@ desc: |
   支持 {at}、{name}、{user_id}、{group_id} 占位符。
   广告检测采用智能评分机制，综合判断多种广告特征。
 short_desc: 功能全面的 QQ 群管理插件，支持禁言、踢人、封禁、广告拦截、欢迎消息等
-repo: https://github.com/yourusername/ZM-QQManager
+repo: https://github.com/ZomebieMask/ZM-QQManager
 astrbot_version: ">=3.4.0"
 support_platforms:
   - aiocqhttp
