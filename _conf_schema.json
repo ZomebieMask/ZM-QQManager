@@ -84,29 +84,31 @@
   },
   "file_host": {
     "description": "文件下载服务监听地址",
-    "hint": "0.0.0.0 表示监听所有网卡；仅本机访问可填 127.0.0.1",
+    "hint": "本机访问填 127.0.0.1；局域网访问填 0.0.0.0；公网需填服务器公网 IP",
     "type": "string",
     "default": "0.0.0.0"
   },
   "file_port": {
     "description": "文件下载服务端口",
+    "hint": "默认 9977，确保端口未被占用",
     "type": "int",
     "default": 9977
   },
   "file_base_url": {
-    "description": "对外下载地址前缀，例如 http://1.2.3.4:9977 或 https://files.example.com",
-    "hint": "留空则自动使用 file_host:file_port 拼接，公网使用时建议显式填写",
+    "description": "文件下载链接的访问地址",
+    "hint": "格式: http://你的IP:端口 或 https://你的域名。留空则自动使用上面的地址和端口",
     "type": "string",
     "default": ""
   },
   "file_server_enabled": {
-    "description": "启用内置文件下载服务",
-    "hint": "关闭后 /file download 无法生成链接",
+    "description": "是否启用文件下载服务",
+    "hint": "关闭后将无法使用 /file download 功能",
     "type": "bool",
     "default": true
   },
   "file_default_ttl": {
-    "description": "文件下载链接默认有效期（秒）",
+    "description": "下载链接默认有效时长（秒）",
+    "hint": "默认 3600 秒（1 小时）",
     "type": "int",
     "default": 3600
   },

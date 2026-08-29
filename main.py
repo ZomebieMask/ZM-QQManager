@@ -69,7 +69,7 @@ def _find_slime_chunks(seed: int, search_range: int) -> List[tuple]:
     return found
 
 
-@register("ZM-QQManager", "ZM", "功能全面的 QQ 群管理插件", "1.0.1",
+@register("ZM-QQManager", "ZM", "功能全面的 QQ 群管理插件", "1.0.2",
           "https://github.com/ZomebieMask/ZM-QQManager")
 class ZMQQManager(Star):
     """群管理插件主体。"""
@@ -115,7 +115,7 @@ class ZMQQManager(Star):
             error = await self.server.start()
             if error:
                 logger.warning(f"[ZM-QQManager] {error}")
-        logger.info("[ZM-QQManager] 插件已加载 v1.0.1")
+        logger.info("[ZM-QQManager] 插件已加载 v1.0.2")
 
     async def terminate(self):
         """插件卸载时释放端口并落盘。"""
@@ -620,7 +620,7 @@ class ZMQQManager(Star):
     # 文件仓库
     # ------------------------------------------------------------------
 
-    @filter.command("file")
+    @filter.command("file", alias={"f"})
     async def cmd_file(self, event: AstrMessageEvent):
         """文件仓库: upload/download/log/list/delete
 
@@ -628,6 +628,9 @@ class ZMQQManager(Star):
         upload/delete/log update 仅 AstrBot 管理员可用。
         """
         raw = self._raw_after(event, "file")
+        if raw == (event.message_str or "").strip():
+            raw = self._raw_after(event, "f")
+
         parts = raw.split()
         action = parts[0].lower() if parts else "help"
 
@@ -677,14 +680,14 @@ class ZMQQManager(Star):
             return
 
         yield event.plain_result(
-            "文件仓库用法\n"
+            "文件仓库用法（/file 可简写为 /f）\n"
             "/file download <name>      获取临时下载链接\n"
             "/file log <name> [次数]     查看更新日志\n"
             "/file list                 查看全部文件\n"
             "以下仅管理员可用:\n"
             "/file upload <name> <时长>  上传文件（随后发送文件即可）\n"
             "/file log update <name> <version> <内容>  记录更新\n"
-            "/file delete <name>        删除文件\n"
+            "/file delete <name>        删除文件（可简写为 del）\n"
             "时长支持: 30s / 10m / 2h / 7d"
         )
 
@@ -864,6 +867,50 @@ class ZMQQManager(Star):
                 f"\n下载命令: /file download {pending['name']}"
                 f"\n链接有效期: {format_duration(pending['ttl'])}"
             )
+
+        # 如果上传成功，且用户是管理员，处理文件删除逻辑
+        if ok and event.is_admin():
+            group_id_str = str(event.get_group_id() or "")
+            user_id = str(event.get_sender_id())
+
+            if group_id_str and file_component:
+                # 尝试获取群信息和机器人角色
+                try:
+                    bot_id = str(event.get_self_id() or "")
+                    if bot_id:
+                        bot_info = await api.member_info(int(group_id_str), int(bot_id))
+                        bot_role = str(bot_info.get("role", "member"))
+
+                        user_info = await api.member_info(int(group_id_str), int(user_id))
+                        user_role = str(user_info.get("role", "member"))
+
+                        should_delete = False
+                        use_recall = False
+
+                        # 如果机器人是群主，撤回管理员发的文件消息
+                        if bot_role == "owner":
+                            use_recall = True
+                            should_delete = True
+                        # 如果机器人是管理员
+                        elif bot_role == "admin":
+                            # 上传者是群主或其他管理员，直接删除群文件
+                            if user_role in {"owner", "admin"}:
+                                should_delete = True
+
+                        if should_delete:
+                            if use_recall:
+                                # 撤回消息
+                                await api.try_call("delete_msg", message_id=event.message_obj.message_id)
+                                logger.info(f"[ZM-QQManager] 机器人是群主，已撤回管理员上传的文件消息")
+                            else:
+                                # 删除群文件
+                                file_id = getattr(file_component, "id", None) or getattr(file_component, "file_id", None)
+                                if file_id:
+                                    await api.try_call("delete_group_file", group_id=int(group_id_str), file_id=file_id)
+                                    logger.info(f"[ZM-QQManager] 机器人是管理员，已删除群文件")
+                except Exception as exc:
+                    logger.warning(f"[ZM-QQManager] 处理文件删除时出错: {exc}")
+
         await event.send(event.plain_result(message + detail))
         event.stop_event()
 
@@ -871,7 +918,6 @@ class ZMQQManager(Star):
     # 合并转发伪造
     # ------------------------------------------------------------------
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("merge")
     async def cmd_merge(self, event: AstrMessageEvent):
         """/merge <title> <qq> <内容> [<qq> <内容> ...] - 构造合并转发消息"""
@@ -916,7 +962,7 @@ class ZMQQManager(Star):
             yield event.plain_result("未解析到有效的 <qq> <内容> 组合，请检查格式")
             return
 
-        nodes = []
+        nodes = [forward_node(str(event.get_self_id() or "10000"), "群聊的聊天记录", f"【{title}】")]
         for qq, content in entries:
             name = await resolve_member_name(api, int(group_id), qq)
             nodes.append(forward_node(qq, name, content))
@@ -1471,7 +1517,7 @@ class ZMQQManager(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("recall")
     async def cmd_recall(self, event: AstrMessageEvent):
-        """/recall - 撤回被回复的消息；/recall <数量> - 批量撤回近期消息"""
+        """/recall - 撤回被回复的消息；/recall <数量> [是否包含机器人] - 批量撤回近期消息"""
         group_id = self._require_group(event)
         if not group_id:
             yield event.plain_result(ADMIN_ONLY)
@@ -1498,21 +1544,38 @@ class ZMQQManager(Star):
         args = self._args(event, "recall")
         if not args:
             yield event.plain_result(
-                "用法: 回复某条消息后使用 /recall\n      或 /recall <数量> 批量撤回近期消息"
+                "用法: 回复某条消息后使用 /recall\n"
+                "      或 /recall <数量> [是否包含机器人]\n"
+                "      例: /recall 5 或 /recall 5 false（不包含机器人）"
             )
             return
 
         try:
             count = max(1, min(int(args[0]), 50))
         except ValueError:
-            yield event.plain_result("数量必须是数字。例: /recall 5")
+            yield event.plain_result("数量必须是数字。例: /recall 5 或 /recall 5 false")
             return
 
+        # 解析第二个参数：是否包含机器人本身的消息
+        include_bot = True
+        if len(args) > 1:
+            arg_lower = args[1].lower()
+            if arg_lower in {"false", "f", "0", "no", "否"}:
+                include_bot = False
+
+        bot_id = str(event.get_self_id() or "")
         history = self._message_history.get(group_id, [])
         # 跳过 /recall 自身
         pending = [
             item for item in history if item["message_id"] != event.message_obj.message_id
-        ][-count:]
+        ]
+
+        # 如果不包含机器人，过滤掉机器人的消息
+        if not include_bot and bot_id:
+            pending = [item for item in pending if item["user_id"] != bot_id]
+
+        pending = pending[-count:]
+
         if not pending:
             yield event.plain_result("没有可撤回的记录（插件仅记录启动后的消息）")
             return
@@ -1681,7 +1744,6 @@ class ZMQQManager(Star):
     # 我的世界工具
     # ------------------------------------------------------------------
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("slimefinder", alias={"sf"})
     async def cmd_slimefinder(self, event: AstrMessageEvent):
         """/slimefinder <version> <seed> - 查找史莱姆区块"""
@@ -1769,7 +1831,7 @@ class ZMQQManager(Star):
     async def cmd_help(self, event: AstrMessageEvent):
         """/zmhelp - 查看全部命令"""
         yield event.plain_result(
-            "ZM-QQManager v1.0.1 命令一览\n"
+            "ZM-QQManager v1.0.2 命令一览\n"
             "除标注外均仅 AstrBot 管理员可用\n\n"
             "【禁言】\n"
             "/mute <成员> [时长]      禁言成员，默认 10 分钟\n"
@@ -1788,14 +1850,14 @@ class ZMQQManager(Star):
             "【检测】\n"
             "/antiflood on|off       刷屏检测\n"
             "/cardcheck on|off       群名片广告与敏感词检测\n\n"
-            "【文件】全体成员可用:\n"
+            "【文件】/file 可简写为 /f，全体成员可用:\n"
             "/file download <name>       获取临时下载链接\n"
             "/file log <name> [次数]      查看更新日志\n"
             "/file list                  查看全部文件\n"
             "【文件】仅管理员:\n"
             "/file upload <name> <时长>   上传文件\n"
             "/file log update <name> <version> <内容>\n"
-            "/file delete <name>         删除文件\n\n"
+            "/file delete <name>         删除文件（delete 可简写为 del）\n\n"
             "【成员】\n"
             "/kick <成员>            踢出成员\n"
             "/kick <时间>            清理不活跃成员（例: /kick 20d）\n"
@@ -1806,13 +1868,13 @@ class ZMQQManager(Star):
             "/title @成员 <文本>      设置群头衔\n\n"
             "【消息与欢迎】\n"
             "/recall                 回复消息后撤回\n"
-            "/recall <数量>           批量撤回近期消息\n"
+            "/recall <数量> [是否包含机器人]  批量撤回（例: /recall 5 false）\n"
             "/ad | /ad set <文本> | /ad clear | /ad reset\n"
             "/adban on|off           广告拦截\n"
             "/wel set <文本> | on | off | reset | status\n\n"
             "【其他】\n"
-            "/merge <title> <qq> <内容> [...]  构造合并转发\n"
+            "/merge <title> <qq> <内容> [...]  构造合并转发（全体可用）\n"
             "/kill <成员> <理由>              赛博击杀播报\n"
-            "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf）\n\n"
+            "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf，全体可用）\n\n"
             "时长单位: s 秒 / m 分钟 / h 小时 / d 天"
         )
