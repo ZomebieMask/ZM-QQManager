@@ -3,10 +3,10 @@
 ## ✅ 插件信息
 
 - **插件名称**: ZM-QQManager
-- **版本**: 1.0.0
+- **版本**: 1.0.1
 - **作者**: ZM
 - **协议**: MIT License
-- **仓库**: https://github.com/yourusername/ZM-QQManager
+- **仓库**: https://github.com/ZomebieMask/ZM-QQManager
 
 ## 📦 文件清单
 
@@ -125,8 +125,8 @@
 1. [ ] 创建 GitHub 仓库: `ZM-QQManager`
 2. [ ] 设置仓库描述
 3. [ ] 添加 Topics: `astrbot`, `qq-bot`, `group-management`, `plugin`
-4. [ ] 推送代码到 GitHub
-5. [ ] 创建 Release v1.0.0
+4. [x] 推送代码到 GitHub
+5. [ ] 创建 Release v1.0.1
 
 ### AstrBot 插件市场发布
 
@@ -176,7 +176,7 @@
 - [x] 代码完成
 - [x] 文档完成
 - [x] Git 提交完成
-- [ ] GitHub 推送
+- [x] GitHub 推送
 - [ ] 插件市场发布
 - [ ] 社区公告
 
