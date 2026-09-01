@@ -43,11 +43,27 @@ class OneBotApi:
             raise RuntimeError(str(exc)) from exc
 
     async def try_call(self, action: str, **payload: Any) -> Optional[Any]:
-        """调用协议端 API，失败返回 None（用于不应中断流程的场景）。"""
+        """调用协议端 API，失败返回 None（用于不应中断流程的场景）。
+
+        只适合"要拿返回数据"的动作。判断成败请用 :meth:`try_ok`。
+        """
         try:
             return await self.call(action, **payload)
         except RuntimeError:
             return None
+
+    async def try_ok(self, action: str, **payload: Any) -> bool:
+        """调用协议端 API，只关心成功与否。
+
+        ``try_call() is not None`` 并不能用来判断成败：``delete_msg``、
+        ``_send_group_notice``、``set_group_portrait`` 这类动作成功时
+        ``data`` 本来就是 null，和调用失败返回的 None 分不开。
+        """
+        try:
+            await self.call(action, **payload)
+            return True
+        except RuntimeError:
+            return False
 
     async def mute(self, group_id: int, user_id: int, duration: int) -> None:
         """禁言成员，``duration`` 为 0 表示解除禁言。"""
@@ -118,6 +134,60 @@ class OneBotApi:
         await self.call(
             "set_group_card", group_id=int(group_id), user_id=int(user_id), card=card
         )
+
+    async def set_group_name(self, group_id: int, name: str) -> None:
+        await self.call("set_group_name", group_id=int(group_id), group_name=name)
+
+    async def set_group_portrait(
+        self, group_id: int, candidates: List[str]
+    ) -> Tuple[bool, str]:
+        """设置群头像，返回 ``(是否成功, 最后一次失败原因)``。
+
+        ``file`` 字段的写法各协议端支持度不一（base64 / file:// / 本地路径），
+        依次试过去，谁能成就用谁。
+        """
+        last = "协议端未接受任何一种图片写法"
+        for candidate in candidates:
+            try:
+                await self.call(
+                    "set_group_portrait", group_id=int(group_id), file=candidate, cache=1
+                )
+                return True, ""
+            except RuntimeError as exc:
+                last = str(exc)
+        return False, last
+
+    async def send_group_notice(
+        self,
+        group_id: int,
+        content: str,
+        image: Optional[str] = None,
+        pinned: bool = False,
+    ) -> Tuple[bool, str]:
+        """发布群公告，返回 ``(是否成功, 附加说明)``。
+
+        ``pinned`` 只有 NapCat 等部分实现支持，协议端拒绝时退回不带置顶的
+        调用，公告照发但会在说明里讲清楚没置顶成功。
+        """
+        payload: Dict[str, Any] = {"group_id": int(group_id), "content": content}
+        if image:
+            payload["image"] = image
+
+        if pinned:
+            if await self.try_ok("_send_group_notice", **payload, pinned=1):
+                return True, ""
+            if await self.try_ok("_send_group_notice", **payload):
+                return True, "当前协议端不支持置顶参数，公告已发布但未置顶"
+            return False, ""
+
+        return await self.try_ok("_send_group_notice", **payload), ""
+
+    async def stranger_name(self, user_id: str) -> str:
+        """取任意 QQ 的昵称，用于成员已退群、查不到群名片的场景。"""
+        info = await self.try_call("get_stranger_info", user_id=int(user_id))
+        if isinstance(info, dict):
+            return str(info.get("nickname") or user_id)
+        return str(user_id)
 
     async def member_list(self, group_id: int) -> List[Dict[str, Any]]:
         result = await self.try_call("get_group_member_list", group_id=int(group_id))

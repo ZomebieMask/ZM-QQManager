@@ -166,5 +166,29 @@
     "description": "广告拦截提示语，占位符：{at} {name} {user_id} {score} {duration}",
     "type": "string",
     "default": "{at} 消息被判定为广告（评分 {score}），已撤回并禁言 {duration}"
+  },
+  "media_wait_timeout": {
+    "description": "两步指令等待图片 / 答复的超时时间（秒）",
+    "hint": "/g pp、/bc、/bye image 提示「请发送图片」之后的等待时长，超时即指令失效。默认 60 秒",
+    "type": "int",
+    "default": 60
+  },
+  "avatar_recall": {
+    "description": "更换群头像成功后撤回那张图片消息",
+    "hint": "机器人需为群主或管理员才撤得掉；关闭后图片会留在群里",
+    "type": "bool",
+    "default": true
+  },
+  "broadcast_recall": {
+    "description": "发布带图群公告后撤回那张图片消息",
+    "hint": "机器人需为群主或管理员才撤得掉；关闭后图片会留在群里",
+    "type": "bool",
+    "default": true
+  },
+  "farewell_recall": {
+    "description": "设置退群提示图片后撤回那张图片消息",
+    "hint": "机器人需为群主或管理员才撤得掉；关闭后图片会留在群里",
+    "type": "bool",
+    "default": true
   }
 }

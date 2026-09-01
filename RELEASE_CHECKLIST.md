@@ -6,7 +6,7 @@
 - **版本**: 1.0.1
 - **作者**: ZM
 - **协议**: MIT License
-- **仓库**: https://github.com/ZomebieMask/ZM-QQManager
+- **仓库**: https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager
 
 ## 📦 文件清单
 

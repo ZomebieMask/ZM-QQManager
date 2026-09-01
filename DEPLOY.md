@@ -22,14 +22,14 @@
 cd /path/to/astrbot/plugins
 
 # 克隆仓库
-git clone https://github.com/yourusername/ZM-QQManager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 
 # 重启 AstrBot
 ```
 
 ### 3. 下载压缩包安装
 
-1. 从 [Releases](https://github.com/yourusername/ZM-QQManager/releases) 下载最新版本
+1. 从 [Releases](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/releases) 下载最新版本
 2. 解压到 AstrBot 的 `plugins` 目录
 3. 确保目录结构为：`plugins/ZM-QQManager/main.py`
 4. 重启 AstrBot
@@ -187,7 +187,7 @@ git pull
 
 ## 📞 技术支持
 
-- GitHub Issues: [提交问题](https://github.com/yourusername/ZM-QQManager/issues)
+- GitHub Issues: [提交问题](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
 - AstrBot 社区: [访问论坛](https://astrbot.app)
 - 文档中心: [查看文档](https://docs.astrbot.app)
 

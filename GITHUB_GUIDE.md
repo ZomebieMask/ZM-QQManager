@@ -20,7 +20,7 @@
 
 2. **获取仓库 URL**
    - 创建后会看到快速设置页面
-   - 复制仓库 URL，例如：`https://github.com/yourusername/ZM-QQManager.git`
+   - 复制仓库 URL，例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git`
 
 3. **推送代码**
    ```bash
@@ -28,7 +28,7 @@
    cd E:\claude-workspace\astrbot-plugins\ZM-QQManager
    
    # 添加远程仓库（替换 yourusername 为你的 GitHub 用户名）
-   git remote add origin https://github.com/yourusername/ZM-QQManager.git
+   git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
    
    # 推送代码
    git branch -M main
@@ -56,7 +56,7 @@ gh auth login
 
 # 创建仓库并推送
 cd E:\claude-workspace\astrbot-plugins\ZM-QQManager
-gh repo create ZM-QQManager --public --source=. --remote=origin --push
+gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin --push
 ```
 
 ### 第二步：完善 GitHub 仓库
@@ -75,7 +75,7 @@ gh repo create ZM-QQManager --public --source=. --remote=origin --push
 
 3. **更新 metadata.yaml**
    - 将 `repo` 字段改为你的实际仓库地址
-   - 例如：`https://github.com/yourusername/ZM-QQManager`
+   - 例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager`
    - 提交更新：
    ```bash
    git add metadata.yaml
@@ -100,7 +100,7 @@ gh repo create ZM-QQManager --public --source=. --remote=origin --push
 
 2. **提交插件**
    - 点击「发布新插件」或类似按钮
-   - 输入 GitHub 仓库 URL：`https://github.com/yourusername/ZM-QQManager`
+   - 输入 GitHub 仓库 URL：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager`
    - 点击「提交」
 
 3. **自动解析**

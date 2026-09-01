@@ -37,9 +37,17 @@
 - **自动处理**: 检测到广告后自动撤回并禁言
 - **多维度判断**: 综合分析广告短语、联系方式、外链等特征
 
-### 📢 群公告与欢迎
+### 🏷️ 群资料管理
+- **改群名**: `/g nn <文本>`，支持跨群批量
+- **改群头像**: `/g pp`，图片可随命令附带，也可在 1 分钟内补发
+- **批量操作**: 群号用 `-` 连接即可一次操作多个群
+- **自动清理**: 换头像成功后自动撤回那张图片（可关闭）
+
+### 📢 群公告与迎送
+- **群公告**: `/bc <内容> <true|false>` 发布公告，可置顶、可配图
 - **自定义广告**: 保存和发布群内广告
 - **入群欢迎**: 自动欢迎新成员，支持自定义文本
+- **退群提示**: 成员退群后自动发送自定义内容，可附带图片
 - **占位符支持**: 支持 `{at}`, `{name}`, `{user_id}`, `{group_id}` 占位符
 
 ### 🎮 特色工具
@@ -201,6 +209,95 @@
 - 外链: 2分
 - 促销词汇: 2分
 - **总分 ≥ 6 分**: 判定为广告，自动撤回并禁言10分钟
+
+### 群资料命令
+
+> `/group` 可简写为 `/g`。仅 AstrBot 管理员可用，且机器人需为目标群的群主或管理员。
+
+#### `/group newname <文本> [qq群号]`
+修改群名称，缩写 `/g nn`。
+
+**示例**:
+```
+/g nn 摸鱼交流群                     修改当前群的群名
+/g nn 摸鱼交流群 12345678            修改指定群
+/g nn 统一群名 3366-1009-10032        批量修改三个群
+/g nn "老年活动中心 2025"             群名以数字结尾时用引号包住
+```
+
+> 末尾若是纯数字（≥5 位）或用 `-` 连接的数字串，会被当作目标群号。
+> 群名本身要以数字结尾时，请用引号把群名包起来。
+
+#### `/group pp [图片] [qq群号]`
+修改群头像，缩写 `/g avatar`。
+
+**两种用法**:
+```
+/g pp                    随命令附带图片（电脑端直接粘贴）→ 立即生效
+/g pp 3366-1009-10032    不带图片 → 机器人提示「1分钟内 请发送图片 否则上传失败」
+```
+
+不带图片时，机器人会等待你在 1 分钟内补发图片；超时则指令失效、执行失败。
+上传成功后，若机器人是群主或管理员，会自动撤回那张图片消息
+（可用配置 `avatar_recall` 关闭，默认开启）。
+
+**批量说明**: 群号用 `-` 连接即可批量操作，如 `/g pp 3366-1009-10032`
+表示给 3366、1009、10032 三个群换同一张头像。单次上限 20 个群。
+
+### 群公告命令
+
+#### `/broadcast <内容> <是否置顶公告>`
+发布 QQ 群群公告，缩写 `/bc`。`<是否置顶公告>` 只能填 `true` 或 `false`。
+
+**示例**:
+```
+/bc 本周六 20:00 停服维护 true        发布并置顶
+/bc 群规已更新，请查看精华消息 false    发布但不置顶
+```
+
+**图片支持**:
+- 电脑端可以直接把图片插进内容里，命令一次执行完成
+- 只发了文字时，机器人会追问「是否需要上传图片？」，回答 `是` 或 `否`
+  - 回答 `是`：机器人等待你在 1 分钟内发送图片，然后发布带图公告
+  - 回答 `否`：直接发布纯文本公告
+- 带图公告发布后，若机器人是群主或管理员会自动撤回那张图片
+  （可用配置 `broadcast_recall` 关闭，默认开启）
+
+> 置顶依赖协议端支持 `pinned` 参数（NapCat 等支持）。协议端不支持时公告照发，
+> 机器人会明确提示「当前协议端不支持置顶参数」。
+
+### 退群提示命令
+
+#### `/bye`
+预览当前退群提示设置。
+
+#### `/bye set <文本>`
+设置退群提示内容并自动开启。
+
+**示例**:
+```
+/bye set {name}（{user_id}）{reason}，本群还剩下我们这些人。
+/bye set 可惜了，{name} 被 {operator} 移出了群聊
+```
+
+**占位符**: `{at}`（已退群成员 at 不到，退化为昵称）、`{name}`、`{user_id}`、
+`{group_id}`、`{reason}`（"退出了本群" / "被移出群聊"）、`{operator}`（踢人的管理员）
+
+#### `/bye image`
+设置退群提示附带的图片。图片可随命令附带，也可在提示后 1 分钟内补发。
+上传成功后若机器人是群主或管理员会自动撤回图片（配置 `farewell_recall`）。
+
+#### `/bye image clear`
+清除附带图片。
+
+#### `/bye on` / `/bye off`
+开启 / 关闭退群提示。
+
+#### `/bye reset`
+恢复默认提示内容并开启（图片设置保持不变）。
+
+#### `/bye status`
+查看开关、内容与图片状态。
 
 ### 欢迎消息命令
 
@@ -418,7 +515,7 @@
 
 ```bash
 cd /path/to/astrbot/plugins
-git clone https://github.com/yourusername/ZM-QQManager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 ```
 
 ## ⚙️ 配置说明
@@ -439,6 +536,10 @@ git clone https://github.com/yourusername/ZM-QQManager.git
   `file_base_url`、`file_default_ttl`、`file_private_only_tip`、
   `file_link_expired_tip`
 - **赛博击杀**: `kill_template`、`kill_notify_all_groups`
+- **图片交互**: `media_wait_timeout`（等待补发图片 / 答复的秒数，默认 60）、
+  `avatar_recall`（换群头像后撤回图片，默认开启）、
+  `broadcast_recall`（带图公告后撤回图片，默认开启）、
+  `farewell_recall`（设置退群提示图后撤回图片，默认开启）
 
 ## 🔒 权限要求
 
@@ -499,7 +600,7 @@ MIT License
 - [AstrBot 官网](https://astrbot.app)
 - [AstrBot 文档](https://docs.astrbot.app)
 - [插件市场](https://cloud.astrbot.app/market)
-- [GitHub 仓库](https://github.com/yourusername/ZM-QQManager)
+- [GitHub 仓库](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager)
 
 ## ⚠️ 注意事项
 
@@ -512,7 +613,7 @@ MIT License
 ## 📮 反馈
 
 如有问题或建议，请通过以下方式联系：
-- 提交 [GitHub Issue](https://github.com/yourusername/ZM-QQManager/issues)
+- 提交 [GitHub Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
 - AstrBot 社区反馈
 
 ---

@@ -1,6 +1,6 @@
-name: ZM_QQManager
+name: astrbot_plugin_zm_qqmanager
 display_name: ZM-QQManager
-version: 1.0.3
+version: 1.0.4
 author: ZM
 desc: |
   功能强大的 QQ 群管理插件，提供全方位的群管理功能：
@@ -13,10 +13,12 @@ desc: |
   - **成员管理**: 踢出、封禁、解封、设置管理员
   - **消息管理**: 撤回消息（单条或批量）
   - **文件仓库**: 上传文件、临时下载链接、更新日志
+  - **群资料管理**: 修改群名称与群头像，支持跨群批量操作
+  - **群公告**: 发布群公告，可置顶、可配图
   - **合并转发**: 构造合并聊天记录
   - **赛博击杀**: 跨群同步播报，模板可在后台配置
   - **广告管理**: 智能广告检测与拦截、自定义群广告
-  - **欢迎系统**: 可自定义的入群欢迎消息
+  - **迎送系统**: 可自定义的入群欢迎与退群提示（退群提示可带图片）
   - **头衔管理**: 设置群成员专属头衔
   - **活跃度管理**: 自动清理不活跃成员
   - **我的世界工具**: 史莱姆区块查找器
@@ -33,6 +35,10 @@ desc: |
   - `/file upload|download|log|list|delete` - 文件仓库（`/file` 缩写 `/f`）
   - `/file log update <name> <version> <内容>`（缩写 `/f l up`）- 更新已上传目标文件的版本字段，内容为补充解释更新内容
   - `/file download cdreset <成员>`（缩写 `/f dl cdreset`）- 重置成员的下载冷却
+  - `/group newname <文本> [qq群号]`（缩写 `/g nn`）- 修改群名称，群号可用 `-` 连接批量
+  - `/group pp [图片] [qq群号]`（缩写 `/g avatar`）- 修改群头像，未附图则等待 1 分钟内补发
+  - `/broadcast <内容> <是否置顶公告>`（缩写 `/bc`）- 发布群公告，可插图
+  - `/bye set|image|image clear|on|off|reset|status` - 退群提示，可带图片
   - `/merge <title> <qq> <内容> [...]` - 构造合并转发
   - `/kill <成员> <理由>` - 赛博击杀播报
   - `/kick <成员>` / `/kick <时间>` - 踢出成员 / 清理不活跃成员
@@ -50,7 +56,7 @@ desc: |
   时长单位: s 秒 / m 分钟 / h 小时 / d 天。
   支持 {at}、{name}、{user_id}、{group_id} 占位符。
 short_desc: 功能全面的 QQ 群管理插件，支持禁言、敏感词、刷屏检测、文件仓库、广告拦截等
-repo: https://github.com/ZomebieMask/ZM-QQManager
+repo: https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager
 astrbot_version: ">=3.4.0"
 support_platforms:
   - aiocqhttp

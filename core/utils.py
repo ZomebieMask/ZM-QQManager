@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # 单位 -> 秒。同时接受英文缩写与中文写法。
 _UNIT_SECONDS = {
@@ -119,6 +119,99 @@ def truncate(text: str, limit: int = 60) -> str:
     """截断过长文本，便于写进提示与日志。"""
     text = (text or "").replace("\n", " ").strip()
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+# /group 的 [qq群号] 参数：单个群号，或用 - , ， 、 串起来的一批群号
+_GROUP_IDS_RE = re.compile(r"\d{4,12}(?:[-,，、]\d{4,12})*")
+_GROUP_IDS_SPLIT = re.compile(r"[-,，、]")
+_HAS_SEPARATOR = re.compile(r"[-,，、]")
+
+# 被引号包住的整段文字按原样取用，用于群名本身以数字结尾的场景
+_QUOTED_RE = re.compile(r'^(["\'「“])(.*?)(["\'」”])(?=\s|$)', re.DOTALL)
+
+# 刻意不收 1 / 0 / on / off：公告正文以数字结尾很常见
+# （"报名截止 10:00 30"），把末位数字当成置顶开关会改错语义。
+_TRUE_WORDS = {"true", "t", "yes", "y", "是", "置顶"}
+_FALSE_WORDS = {"false", "f", "no", "n", "否", "不置顶"}
+
+
+def parse_group_ids(token: str) -> Optional[List[str]]:
+    """把 ``3366-1009-10032`` 解析成群号列表，不是群号串时返回 None。"""
+    token = (token or "").strip()
+    if not token or not _GROUP_IDS_RE.fullmatch(token):
+        return None
+    ids: List[str] = []
+    for piece in _GROUP_IDS_SPLIT.split(token):
+        if piece and piece not in ids:
+            ids.append(piece)
+    return ids
+
+
+def split_trailing_group_ids(text: str) -> Tuple[str, Optional[List[str]]]:
+    """从末尾切出 ``[qq群号]``，返回 ``(剩余文本, 群号列表)``。
+
+    这里比 :func:`parse_group_ids` 更保守：末尾那一段只有在带分隔符
+    （``3366-1009``）或至少 5 位数字时才算群号。否则 ``/g newname 老年活动
+    中心 2025`` 里的年份会被误吞成群号。真要用数字结尾的群名就加引号：
+    ``/g newname "老年活动中心 2025"``。
+    """
+    body = (text or "").strip()
+    if not body:
+        return "", None
+
+    quoted = _QUOTED_RE.match(body)
+    if quoted:
+        return quoted.group(2).strip(), parse_group_ids(body[quoted.end():].strip())
+
+    parts = body.rsplit(None, 1)
+    if len(parts) == 2:
+        tail = parts[1]
+        if _HAS_SEPARATOR.search(tail) or len(tail) >= 5:
+            ids = parse_group_ids(tail)
+            if ids:
+                return parts[0].strip(), ids
+    return body, None
+
+
+def parse_bool(token: str) -> Optional[bool]:
+    """解析 true / false 参数，认不出返回 None。"""
+    lowered = (token or "").strip().lower()
+    if lowered in _TRUE_WORDS:
+        return True
+    if lowered in _FALSE_WORDS:
+        return False
+    return None
+
+
+def split_trailing_bool(text: str) -> Tuple[str, Optional[bool]]:
+    """从末尾切出 true/false，返回 ``(正文, 布尔值)``。
+
+    正文可以是多行的（``rsplit`` 按任意空白切分），因此把 ``true`` 单独写在
+    最后一行也能正确识别。末尾不是布尔值时返回 ``(原文, None)``。
+    """
+    body = (text or "").strip()
+    if not body:
+        return "", None
+
+    parts = body.rsplit(None, 1)
+    value = parse_bool(parts[-1])
+    if value is None:
+        return body, None
+    # 整条消息只有一个 true/false 时，正文为空（图片可能在消息段里）
+    return (parts[0].strip() if len(parts) == 2 else ""), value
+
+
+def render_cq(template: str, values: Dict[str, str]) -> str:
+    """把管理员写的提示语模板渲染成待发送的消息文本。
+
+    模板由管理员编写，其中的 CQ 码原样保留（便于插入表情、图片）；但填进去
+    的值里如果含成员可控内容（昵称等），调用方必须先自行 :func:`escape_cq`，
+    否则一个叫 ``[CQ:at,qq=all]`` 的人就能借机器人之口 @ 全体。
+    """
+    text = template or ""
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
 
 
 def safe_name(name: str) -> Optional[str]:

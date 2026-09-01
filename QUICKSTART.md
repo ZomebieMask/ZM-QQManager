@@ -16,7 +16,7 @@
 ### 方法 2: 手动安装
 ```bash
 cd /path/to/astrbot/plugins
-git clone https://github.com/yourusername/ZM-QQManager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 # 重启 AstrBot
 ```
 
@@ -90,7 +90,7 @@ git clone https://github.com/yourusername/ZM-QQManager.git
 
 1. 检查机器人是否有管理员权限
 2. 查看 [常见问题](DEPLOY.md#常见问题)
-3. 提交 [GitHub Issue](https://github.com/yourusername/ZM-QQManager/issues)
+3. 提交 [GitHub Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
 
 ---
 

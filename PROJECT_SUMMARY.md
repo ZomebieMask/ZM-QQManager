@@ -145,7 +145,7 @@ ZM-QQManager/
 
 ```bash
 # 创建 GitHub 仓库后
-git remote add origin https://github.com/yourusername/ZM-QQManager.git
+git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 git branch -M main
 git push -u origin main
 ```
@@ -154,7 +154,7 @@ git push -u origin main
 
 将 `repo` 字段改为实际的 GitHub 仓库地址：
 ```yaml
-repo: https://github.com/yourusername/ZM-QQManager
+repo: https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager
 ```
 
 ### 3. 发布到 AstrBot 插件市场
