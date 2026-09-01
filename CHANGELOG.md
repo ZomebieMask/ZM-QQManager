@@ -55,6 +55,25 @@
 - 修正 README 里「`/zmhelp` 对全体成员开放」的错误说明（该指令实际仅管理员可用）
 - 补齐 README 配置项表格中遗漏的 `file_download_cooldown`、`file_cooldown_tip`
 
+### 🗑️ 清理：删掉 7 份过期文档
+
+v1.0.0 / v1.0.1 时期的一次性开发文档全部删除。它们的内容已经全面失效，同时存在
+只会让人分不清哪份是当前的说明：
+
+| 删除的文件 | 失效点 |
+| :--- | :--- |
+| `COMPLETION_REPORT.txt` | v1.0.0 构建报告，「727 行 / 23 个命令」（现为 3000+ 行 / 26 组指令） |
+| `INSTALLATION.txt` | 写着作者本机路径，「已创建 5 个提交 / 标签 v1.0.0」 |
+| `PROJECT_SUMMARY.md` | v1.0.0 的 9 文件目录树；`zm_qqmanager_*` KV 键名从未在现版本存在 |
+| `GITHUB_GUIDE.md` | 教人创建名为 `ZM-QQGroupmgr` 的仓库，仓库名早已不是这个 |
+| `RELEASE_CHECKLIST.md` | v1.0.1 清单，`main.py 28KB`（现为 122KB） |
+| `QUICKSTART.md` | 与 README「快速开始」重复，且插件目录写成 `astrbot/plugins`（应为 `data/plugins`） |
+| `DEPLOY.md` | 插件目录写错；称数据存 AstrBot KV（实为插件目录下 JSON 文件）；`self.max_history_per_group` 这个属性不存在；称撤回有 2 分钟时限（管理员撤他人消息无时限）；称自定义广告规则「未来版本支持」（`ad_threshold` 早已可调） |
+
+安装、权限、指令、配置项、常见问题、安全提醒现在只有 **README.md** 一处说明，
+变更记录只有 **CHANGELOG.md** 一处。顺带删掉仓库根目录里遗留的空 `files/`
+目录（文件仓库实际落在 `data/plugin_data/ZM-QQGroupmgr/files/`）。
+
 ---
 
 ## [1.0.4] - 2026-09-01
