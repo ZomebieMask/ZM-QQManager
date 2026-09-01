@@ -1,12 +1,12 @@
-# ZM-QQManager 发布清单
+# ZM-QQGroupmgr 发布清单
 
 ## ✅ 插件信息
 
-- **插件名称**: ZM-QQManager
+- **插件名称**: ZM-QQGroupmgr
 - **版本**: 1.0.1
 - **作者**: ZM
 - **协议**: MIT License
-- **仓库**: https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager
+- **仓库**: https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr
 
 ## 📦 文件清单
 
@@ -122,7 +122,7 @@
 
 ### GitHub 仓库设置
 
-1. [ ] 创建 GitHub 仓库: `ZM-QQManager`
+1. [ ] 创建 GitHub 仓库: `ZM-QQGroupmgr`
 2. [ ] 设置仓库描述
 3. [ ] 添加 Topics: `astrbot`, `qq-bot`, `group-management`, `plugin`
 4. [x] 推送代码到 GitHub

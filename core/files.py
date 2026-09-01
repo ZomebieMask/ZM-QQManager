@@ -59,6 +59,27 @@ class FileRepository:
 
     # ---------- 基础读写 ----------
 
+    def _entry_path(self, entry: Dict[str, Any]) -> Path:
+        """取条目对应的文件路径。
+
+        ``path`` 存的是上传当时的绝对路径，数据目录改过名（1.0.5 的
+        ZM-QQManager → ZM-QQGroupmgr）或整个 AstrBot 目录被搬走之后，
+        老条目里的绝对路径就指向不存在的地方了。这里在原路径失效时
+        按文件名回落到当前仓库目录，避免已上传的文件集体失联。
+        """
+        raw = str(entry.get("path", ""))
+        path = Path(raw) if raw else self.dir
+        if raw and path.exists():
+            return path
+
+        candidate = self.dir / Path(raw).name if raw else self.dir
+        # 回落时同样要确认落点在仓库目录内，别让脏数据里的名字跑出去
+        try:
+            candidate.resolve().relative_to(self.dir.resolve())
+        except ValueError:
+            return path
+        return candidate if candidate.exists() else path
+
     def _entries(self) -> Dict[str, Any]:
         entries = self.store.get("files")
         if not isinstance(entries, dict):
@@ -118,7 +139,7 @@ class FileRepository:
         try:
             await asyncio.to_thread(shutil.copy2, str(source), str(target))
         except Exception as exc:
-            logger.error(f"[ZM-QQManager] 保存上传文件失败: {exc}")
+            logger.error(f"[ZM-QQGroupmgr] 保存上传文件失败: {exc}")
             return False, f"保存文件失败: {exc}"
 
         entries = self._entries()
@@ -154,12 +175,12 @@ class FileRepository:
         if not entry:
             return False, f"文件「{name}」不存在"
 
-        path = Path(entry.get("path", ""))
+        path = self._entry_path(entry)
         if path.exists():
             try:
                 await asyncio.to_thread(path.unlink)
             except Exception as exc:
-                logger.warning(f"[ZM-QQManager] 删除文件失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 删除文件失败: {exc}")
 
         entries.pop(name, None)
         tokens = self._tokens()
@@ -176,7 +197,7 @@ class FileRepository:
         if not entry:
             return None, f"文件「{name}」不存在，可用 /file list 查看已上传文件"
 
-        path = Path(entry.get("path", ""))
+        path = self._entry_path(entry)
         if not path.exists():
             return None, f"文件「{name}」的本体已丢失，请管理员重新上传"
 
@@ -220,7 +241,7 @@ class FileRepository:
         if not entry:
             return None, None, tip
 
-        path = Path(entry.get("path", ""))
+        path = self._entry_path(entry)
         if not path.exists():
             return None, None, tip
 

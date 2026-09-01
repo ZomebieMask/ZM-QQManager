@@ -10,11 +10,13 @@ from typing import Any, Dict, Optional
 
 from astrbot.api import logger
 
-PLUGIN_DIR_NAME = "ZM-QQManager"
+PLUGIN_DIR_NAME = "ZM-QQGroupmgr"
+# 1.0.5 之前叫 ZM-QQManager，老用户的数据目录还是旧名字，首次运行时整目录改名过来
+LEGACY_DIR_NAMES = ("ZM-QQManager",)
 
 
 def get_data_dir() -> Path:
-    """返回本插件的数据目录，必要时创建。"""
+    """返回本插件的数据目录，必要时创建；老版本的目录会先迁移过来。"""
     try:
         from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -22,7 +24,26 @@ def get_data_dir() -> Path:
     except Exception:  # 兜底：AstrBot 版本较旧时退回相对路径
         base = Path("data")
 
-    path = base / "plugin_data" / PLUGIN_DIR_NAME
+    root = base / "plugin_data"
+    path = root / PLUGIN_DIR_NAME
+
+    if not path.exists():
+        for legacy in LEGACY_DIR_NAMES:
+            old = root / legacy
+            if not old.is_dir():
+                continue
+            try:
+                old.rename(path)
+                logger.info(f"[ZM-QQGroupmgr] 已把数据目录 {legacy} 迁移为 {PLUGIN_DIR_NAME}")
+            except OSError as exc:
+                # 迁移失败不能让插件起不来，退回继续用旧目录，数据照样在
+                logger.warning(
+                    f"[ZM-QQGroupmgr] 数据目录 {legacy} 迁移失败（{exc}），继续使用旧目录"
+                )
+                old.mkdir(parents=True, exist_ok=True)
+                return old
+            break
+
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -45,7 +66,7 @@ class JsonStore:
             if isinstance(loaded, dict):
                 self._data = loaded
         except Exception as exc:
-            logger.error(f"[ZM-QQManager] 读取 {self.path.name} 失败: {exc}")
+            logger.error(f"[ZM-QQGroupmgr] 读取 {self.path.name} 失败: {exc}")
 
     def _write(self, payload: str) -> None:
         tmp = None
@@ -57,7 +78,7 @@ class JsonStore:
             os.replace(tmp, self.path)
             tmp = None
         except Exception as exc:
-            logger.error(f"[ZM-QQManager] 写入 {self.path.name} 失败: {exc}")
+            logger.error(f"[ZM-QQGroupmgr] 写入 {self.path.name} 失败: {exc}")
         finally:
             # 写失败时别把 .tmp 残留在数据目录里
             if tmp:
@@ -76,7 +97,7 @@ class JsonStore:
         try:
             payload = json.dumps(self._data, ensure_ascii=False, indent=2)
         except Exception as exc:
-            logger.error(f"[ZM-QQManager] 序列化 {self.path.name} 失败: {exc}")
+            logger.error(f"[ZM-QQGroupmgr] 序列化 {self.path.name} 失败: {exc}")
             return
         async with self._lock:
             await asyncio.to_thread(self._write, payload)

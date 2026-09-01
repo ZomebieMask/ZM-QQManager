@@ -1,15 +1,15 @@
-# ZM-QQManager 项目总结
+# ZM-QQGroupmgr 项目总结
 
 ## 🎉 项目完成
 
-ZM-QQManager 插件已完成开发，所有核心功能均已实现并测试通过。
+ZM-QQGroupmgr 插件已完成开发，所有核心功能均已实现并测试通过。
 
 ---
 
 ## 📦 项目结构
 
 ```
-ZM-QQManager/
+ZM-QQGroupmgr/
 ├── main.py                    # 插件主代码 (727 行)
 ├── metadata.yaml              # 插件元数据
 ├── README.md                  # 使用文档
@@ -145,7 +145,7 @@ ZM-QQManager/
 
 ```bash
 # 创建 GitHub 仓库后
-git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
+git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 git branch -M main
 git push -u origin main
 ```
@@ -154,7 +154,7 @@ git push -u origin main
 
 将 `repo` 字段改为实际的 GitHub 仓库地址：
 ```yaml
-repo: https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager
+repo: https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr
 ```
 
 ### 3. 发布到 AstrBot 插件市场

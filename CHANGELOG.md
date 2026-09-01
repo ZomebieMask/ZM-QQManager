@@ -1,5 +1,62 @@
 # 更新日志
 
+## [1.0.5] - 2026-09-01
+
+### ⚠️ 重要变更：改名为 ZM-QQGroupmgr
+
+`QQManager` 字面是「QQ 管理器」，没体现「群」这层含义；「群管」的英文惯用写法是
+`group manager` / `group admin`，因此本版起统一改名：
+
+- 展示名 `display_name`：`ZM-QQManager` → **`ZM-QQGroupmgr`**
+- 插件标识符 `name`：`astrbot_plugin_zm_qqmanager` → **`astrbot_plugin_zm_qqgroupmgr`**
+- GitHub 仓库：`astrbot_plugin_zm_qqmanager` → **`astrbot_plugin_zm_qqgroupmgr`**
+  （旧地址由 GitHub 自动跳转，已有 clone 仍可用）
+
+> **升级提示**: 插件标识符变了，AstrBot 会把它识别为一个新插件，升级后请到插件
+> 配置面板确认一次配置项（`_conf_schema.json` 里的配置不会自动带过去）。
+>
+> **运行数据不用手动搬**：封禁列表、各功能开关、自定义敏感词、广告与迎送文本、
+> 文件仓库与更新日志所在的数据目录 `data/plugin_data/ZM-QQManager` 会在插件首次
+> 加载时自动改名为 `data/plugin_data/ZM-QQGroupmgr`，数据原样保留。若两个目录同时
+> 存在，插件用新目录、不动旧目录；改名失败（如被占用）则继续用旧目录并打日志。
+
+### ✨ 新增功能
+
+**`/zmhelp` 菜单内容可自定义**
+- 新增插件配置 `help_menu_text`（多行文本）：留空沿用内置的完整菜单，
+  填写后 `/zmhelp` 只显示你写的内容
+- 支持三个占位符：`{name}` 插件名、`{version}` 版本号、`{cooldown}` 当前下载冷却
+
+### 🔧 改进
+
+**数据目录自动迁移**
+- `core/store.py` 新增 `LEGACY_DIR_NAMES`，插件取数据目录时若只有旧目录，
+  整目录改名为新名字；新目录已存在则不动旧目录，改名失败则回落旧目录继续跑
+- 文件仓库条目 `files.json` 里存的是上传当时的**绝对路径**，目录改名后会集体
+  失效。新增 `FileRepository._entry_path()`，原路径不存在时按文件名回落到当前
+  仓库目录（回落同样做目录内校验），`delete` / `issue_token` / `resolve_token`
+  三处统一走它。整个 AstrBot 目录被搬走的情况顺带一起修好了
+- 新增 `test_plugin.py` 自检脚本（`python test_plugin.py`，不依赖 pytest），
+  覆盖帮助菜单三条分支、文件路径回落四种情况、数据目录迁移四种情况
+
+**`/zmhelp` 合并转发卡片标题**
+- 之前帮助是纯文本，超长后由 AstrBot 自动转合并转发，卡片标题只能是协议端
+  默认的「群聊的聊天记录」
+- 现在插件自己发合并转发，卡片标题固定为 **`ZM-QQGroupmgr v<版本号>`**；
+  协议端不支持自定义卡片或在私聊使用时，仍回落为纯文本
+
+**版本号单点维护**
+- 新增 `PLUGIN_NAME` / `PLUGIN_VERSION` 常量，`@register`、启动日志、帮助标题
+  统一取值，不再三处各写一遍
+
+### 📝 文档
+
+- README 与插件市场介绍文档（`metadata.yaml` 的 `desc`）统一改为同一套排版风格
+- 修正 README 里「`/zmhelp` 对全体成员开放」的错误说明（该指令实际仅管理员可用）
+- 补齐 README 配置项表格中遗漏的 `file_download_cooldown`、`file_cooldown_tip`
+
+---
+
 ## [1.0.4] - 2026-09-01
 
 ### ⚠️ 重要变更：插件标识符与仓库名

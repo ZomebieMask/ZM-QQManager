@@ -48,7 +48,7 @@ class DownloadServer:
             )
 
         async def handle_root(_request):
-            return web.Response(text="ZM-QQManager file service", content_type="text/plain")
+            return web.Response(text="ZM-QQGroupmgr file service", content_type="text/plain")
 
         app = web.Application()
         app.router.add_get("/", handle_root)
@@ -60,11 +60,11 @@ class DownloadServer:
             self._site = web.TCPSite(self._runner, self.host, self.port)
             await self._site.start()
         except Exception as exc:
-            logger.error(f"[ZM-QQManager] 文件下载服务启动失败: {exc}")
+            logger.error(f"[ZM-QQGroupmgr] 文件下载服务启动失败: {exc}")
             await self.stop()
             return f"文件下载服务启动失败: {exc}"
 
-        logger.info(f"[ZM-QQManager] 文件下载服务已启动于 {self.host}:{self.port}")
+        logger.info(f"[ZM-QQGroupmgr] 文件下载服务已启动于 {self.host}:{self.port}")
         return None
 
     async def stop(self) -> None:
@@ -88,7 +88,7 @@ def _error_page(message: str) -> str:
 
     return (
         "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
-        "<title>ZM-QQManager</title>"
+        "<title>ZM-QQGroupmgr</title>"
         "<body style=\"margin:0;display:flex;align-items:center;justify-content:center;"
         "height:100vh;font-family:system-ui,sans-serif;color:#333\">"
         f"<div style=\"font-size:20px\">{escape(message)}</div></body></html>"

@@ -1,20 +1,20 @@
 <div align="center">
 
-<img src="logo.png" width="110" alt="ZM-QQManager" />
+<img src="logo.png" width="110" alt="ZM-QQGroupmgr" />
 
-# ZM-QQManager
+# ZM-QQGroupmgr
 
 ### 一个插件，顶十个 —— AstrBot 全能 QQ 群管理套件
 
 **26 组指令 · 10 大模块 · 从禁言踢人到敏感词、刷屏、广告、文件分发、跨群批量操作，一站装完**
 
-[![version](https://img.shields.io/badge/version-1.0.4-blue?style=flat-square)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/releases)
+[![version](https://img.shields.io/badge/version-1.0.5-blue?style=flat-square)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/releases)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A53.4.0-7B68EE?style=flat-square)](https://astrbot.app)
 [![platform](https://img.shields.io/badge/platform-aiocqhttp%20%7C%20nakuru-32CD32?style=flat-square)](https://docs.astrbot.app)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![stars](https://img.shields.io/github/stars/ZomebieMask/astrbot_plugin_zm_qqmanager?style=flat-square&color=FFD700)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/stargazers)
+[![stars](https://img.shields.io/github/stars/ZomebieMask/astrbot_plugin_zm_qqgroupmgr?style=flat-square&color=FFD700)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/stargazers)
 
-[快速开始](#-快速开始) · [功能总览](#-一眼看懂它能干什么) · [为什么选它](#-为什么选-zm-qqmanager) · [指令手册](#-指令手册) · [配置项](#️-配置项) · [常见问题](#-常见问题)
+[快速开始](#-快速开始) · [功能总览](#-一眼看懂它能干什么) · [为什么选它](#-为什么选-zm-qqgroupmgr) · [指令手册](#-指令手册) · [配置项](#️-配置项) · [常见问题](#-常见问题)
 
 </div>
 
@@ -43,10 +43,10 @@
 
 ---
 
-## 🎯 为什么选 ZM-QQManager
+## 🎯 为什么选 ZM-QQGroupmgr
 
 <table>
-<tr><th width="22%">差异点</th><th width="39%">常见群管插件</th><th width="39%">ZM-QQManager</th></tr>
+<tr><th width="22%">差异点</th><th width="39%">常见群管插件</th><th width="39%">ZM-QQGroupmgr</th></tr>
 
 <tr>
 <td><b>跨群批量</b></td>
@@ -103,13 +103,13 @@
 
 **① 安装（推荐：插件市场）**
 
-AstrBot WebUI → 插件市场 → 搜 `ZM-QQManager` → 安装
+AstrBot WebUI → 插件市场 → 搜 `ZM-QQGroupmgr` → 安装
 
 或用 Git：
 
 ```bash
 cd /path/to/astrbot/data/plugins
-git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 ```
 
 </td><td width="50%" valign="top">
@@ -137,7 +137,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 
 ## 📖 指令手册
 
-> 🔒 管理类指令仅 **AstrBot 管理员** 可用。对全体群成员开放的只有 `/file download`、`/file list`、`/file log`（查看）和 `/zmhelp`。
+> 🔒 管理类指令仅 **AstrBot 管理员** 可用。对全体群成员开放的只有 `/file download`、`/file list`、`/file log`（查看）、`/merge` 和 `/slimefinder`。
 > ⏱️ 时长单位：`s` 秒 · `m` 分 · `h` 时 · `d` 天 · `w` 周。
 
 <details open>
@@ -329,7 +329,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 | `/merge <标题> <QQ> <内容> [<QQ> <内容> …]` | 构造合并聊天记录，可多组发送者 |
 | `/kill <成员> <理由>` | 赛博击杀：在与该成员的共同群同步播报，提醒管理处理 |
 | `/slimefinder <版本> <种子>`（`/sf`） | Minecraft 史莱姆区块查找 |
-| `/zmhelp`（`/群管帮助`） | 全部指令总览 |
+| `/zmhelp`（`/群管帮助`） | 全部指令总览。群内以合并转发发送，卡片标题即 `ZM-QQGroupmgr v<版本号>`；菜单内容可在后台 `help_menu_text` 自定义 |
 
 ```
 /merge 对话记录 10001 在吗 10002 不在
@@ -368,9 +368,10 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 | 🚫 敏感词 | `sensitive_default_duration` `sensitive_library_urls` `sensitive_whitelist` `sensitive_tip` |
 | 🏷️ 名片检测 | `card_check_enabled` `card_ad_threshold` `card_action` `card_mute_duration` `card_tip` |
 | 🛡️ 广告拦截 | `ad_threshold` `ad_mute_duration` `ad_tip` |
-| 📁 文件服务 | `file_server_enabled` `file_host` `file_port` `file_base_url` `file_default_ttl` `file_private_only_tip` `file_link_expired_tip` |
+| 📁 文件服务 | `file_server_enabled` `file_host` `file_port` `file_base_url` `file_default_ttl` `file_download_cooldown` `file_cooldown_tip` `file_private_only_tip` `file_link_expired_tip` |
 | ☠️ 赛博击杀 | `kill_template` `kill_notify_all_groups` |
 | 🖼️ 图片交互 | `media_wait_timeout`（等待补发图片/答复秒数，默认 60）`avatar_recall` `broadcast_recall` `farewell_recall`（均默认开启） |
+| 📜 帮助菜单 | `help_menu_text` —— 留空用内置完整菜单；填写后 `/zmhelp` 只显示你写的内容，支持 `{name}` `{version}` `{cooldown}` 三个占位符 |
 
 ### 🔐 下载服务安全提醒
 
@@ -440,7 +441,7 @@ QQ 侧限制：群专属头衔通常**只有群主**能设置，机器人只是�
 
 ## 🔗 相关链接
 
-[AstrBot 官网](https://astrbot.app) · [开发文档](https://docs.astrbot.app) · [插件市场](https://cloud.astrbot.app/market) · [更新日志](CHANGELOG.md) · [提交 Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
+[AstrBot 官网](https://astrbot.app) · [开发文档](https://docs.astrbot.app) · [插件市场](https://cloud.astrbot.app/market) · [更新日志](CHANGELOG.md) · [提交 Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/issues)
 
 ## 📄 开源协议
 
@@ -454,6 +455,6 @@ QQ 侧限制：群专属头衔通常**只有群主**能设置，机器人只是�
 
 **觉得好用的话，点个 ⭐ Star 让更多人看到**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ZomebieMask/astrbot_plugin_zm_qqmanager&type=Date)](https://star-history.com/#ZomebieMask/astrbot_plugin_zm_qqmanager&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=ZomebieMask/astrbot_plugin_zm_qqgroupmgr&type=Date)](https://star-history.com/#ZomebieMask/astrbot_plugin_zm_qqgroupmgr&Date)
 
 </div>

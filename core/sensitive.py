@@ -134,7 +134,7 @@ class SensitiveWordEngine:
             self._library_normalized = {normalize(w): w for w in self._library}
             self._fetched_at = time.time()
             if errors:
-                logger.warning(f"[ZM-QQManager] 部分词库源不可用: {'；'.join(errors)}")
+                logger.warning(f"[ZM-QQGroupmgr] 部分词库源不可用: {'；'.join(errors)}")
             return len(self._library), None
 
     async def reload_library(self) -> Tuple[int, Optional[str]]:
@@ -180,7 +180,7 @@ class SensitiveWordEngine:
         if mode in (MODE_LIBRARY, MODE_BOTH):
             count, error = await self._fetch_library()
             if error and not count:
-                logger.debug(f"[ZM-QQManager] 远程词库不可用: {error}")
+                logger.debug(f"[ZM-QQGroupmgr] 远程词库不可用: {error}")
             else:
                 for key, word in self._library_normalized.items():
                     if key and key not in allow and key in squeezed:

@@ -1,8 +1,8 @@
 ========================================
-ZM-QQManager 安装说明
+ZM-QQGroupmgr 安装说明
 ========================================
 
-插件位置: E:\claude-workspace\astrbot-plugins\ZM-QQManager
+插件位置: E:\claude-workspace\astrbot-plugins\ZM-QQGroupmgr
 
 文件清单:
 - main.py              核心代码 (727行)

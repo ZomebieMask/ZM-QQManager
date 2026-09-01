@@ -190,5 +190,11 @@
     "hint": "机器人需为群主或管理员才撤得掉；关闭后图片会留在群里",
     "type": "bool",
     "default": true
+  },
+  "help_menu_text": {
+    "description": "/zmhelp 命令一览的自定义内容",
+    "hint": "留空则使用插件内置的完整菜单。填写后 /zmhelp 只显示你写的内容，占位符：{name} 插件名 / {version} 版本号 / {cooldown} 当前下载冷却",
+    "type": "text",
+    "default": ""
   }
 }

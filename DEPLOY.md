@@ -1,4 +1,4 @@
-# ZM-QQManager 部署指南
+# ZM-QQGroupmgr 部署指南
 
 ## 📋 前置要求
 
@@ -11,7 +11,7 @@
 ### 1. 通过 AstrBot 插件市场安装（推荐）
 
 1. 访问 [AstrBot 插件市场](https://cloud.astrbot.app/market)
-2. 搜索 "ZM-QQManager"
+2. 搜索 "ZM-QQGroupmgr"
 3. 点击安装
 4. 重启 AstrBot
 
@@ -22,16 +22,16 @@
 cd /path/to/astrbot/plugins
 
 # 克隆仓库
-git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 
 # 重启 AstrBot
 ```
 
 ### 3. 下载压缩包安装
 
-1. 从 [Releases](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/releases) 下载最新版本
+1. 从 [Releases](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/releases) 下载最新版本
 2. 解压到 AstrBot 的 `plugins` 目录
-3. 确保目录结构为：`plugins/ZM-QQManager/main.py`
+3. 确保目录结构为：`plugins/ZM-QQGroupmgr/main.py`
 4. 重启 AstrBot
 
 ## ⚙️ 配置机器人权限
@@ -172,7 +172,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 ### 通过 Git 更新
 
 ```bash
-cd /path/to/astrbot/plugins/ZM-QQManager
+cd /path/to/astrbot/plugins/ZM-QQGroupmgr
 git pull
 ```
 
@@ -187,7 +187,7 @@ git pull
 
 ## 📞 技术支持
 
-- GitHub Issues: [提交问题](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
+- GitHub Issues: [提交问题](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/issues)
 - AstrBot 社区: [访问论坛](https://astrbot.app)
 - 文档中心: [查看文档](https://docs.astrbot.app)
 

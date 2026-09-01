@@ -1,6 +1,6 @@
-# 🚀 ZM-QQManager 快速开始
+# 🚀 ZM-QQGroupmgr 快速开始
 
-> 5分钟快速上手 ZM-QQManager 插件
+> 5分钟快速上手 ZM-QQGroupmgr 插件
 
 ## 📦 安装
 
@@ -8,7 +8,7 @@
 ```
 1. 打开 AstrBot WebUI
 2. 进入「插件市场」
-3. 搜索 "ZM-QQManager"
+3. 搜索 "ZM-QQGroupmgr"
 4. 点击「安装」
 5. 重启 AstrBot
 ```
@@ -16,7 +16,7 @@
 ### 方法 2: 手动安装
 ```bash
 cd /path/to/astrbot/plugins
-git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
+git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 # 重启 AstrBot
 ```
 
@@ -90,7 +90,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
 
 1. 检查机器人是否有管理员权限
 2. 查看 [常见问题](DEPLOY.md#常见问题)
-3. 提交 [GitHub Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager/issues)
+3. 提交 [GitHub Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/issues)
 
 ---
 

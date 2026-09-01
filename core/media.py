@@ -73,7 +73,7 @@ async def _download(url: str) -> Optional[bytes]:
     try:
         import aiohttp
     except ImportError:
-        logger.warning("[ZM-QQManager] 缺少 aiohttp 依赖，无法下载图片")
+        logger.warning("[ZM-QQGroupmgr] 缺少 aiohttp 依赖，无法下载图片")
         return None
 
     timeout = aiohttp.ClientTimeout(total=30)
@@ -81,7 +81,7 @@ async def _download(url: str) -> Optional[bytes]:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status != 200:
-                    logger.warning(f"[ZM-QQManager] 下载图片失败 HTTP {response.status}: {url}")
+                    logger.warning(f"[ZM-QQGroupmgr] 下载图片失败 HTTP {response.status}: {url}")
                     return None
                 chunks = []
                 total = 0
@@ -96,7 +96,7 @@ async def _download(url: str) -> Optional[bytes]:
     except ValueError:
         raise
     except Exception as exc:
-        logger.warning(f"[ZM-QQManager] 下载图片失败: {exc}")
+        logger.warning(f"[ZM-QQGroupmgr] 下载图片失败: {exc}")
         return None
 
 
@@ -155,7 +155,7 @@ async def image_bytes(component: Any) -> Tuple[Optional[bytes], str]:
         except ValueError as exc:
             return None, str(exc)
         except Exception as exc:
-            logger.warning(f"[ZM-QQManager] convert_to_file_path 失败: {exc}")
+            logger.warning(f"[ZM-QQGroupmgr] convert_to_file_path 失败: {exc}")
 
     return None, "未能读取图片内容，请重新发送图片（建议使用原图或本地文件）"
 
@@ -190,7 +190,7 @@ def write_temp_image(data: bytes, ext: str) -> Optional[Path]:
         # 会退回相对路径 data/，相对路径既转不成 file:// URI，协议端也找不到
         return path.resolve()
     except OSError as exc:
-        logger.warning(f"[ZM-QQManager] 写入临时图片失败: {exc}")
+        logger.warning(f"[ZM-QQGroupmgr] 写入临时图片失败: {exc}")
         return None
 
 
@@ -235,5 +235,5 @@ def save_named_image(data: bytes, directory: Path, stem: str, ext: str) -> Optio
         path.write_bytes(data)
         return path
     except OSError as exc:
-        logger.error(f"[ZM-QQManager] 保存图片失败: {exc}")
+        logger.error(f"[ZM-QQGroupmgr] 保存图片失败: {exc}")
         return None

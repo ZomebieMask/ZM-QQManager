@@ -1,4 +1,4 @@
-"""ZM-QQManager - 功能强大的 QQ 群管理插件
+"""ZM-QQGroupmgr - 功能强大的 QQ 群管理插件
 
 作者: ZM
 所有管理命令均限制为 AstrBot 管理员可用。
@@ -50,6 +50,9 @@ from .core.utils import (
     split_trailing_group_ids,
     truncate,
 )
+
+PLUGIN_NAME = "ZM-QQGroupmgr"
+PLUGIN_VERSION = "1.0.5"
 
 ADMIN_ONLY = "此命令仅群聊可用"
 QQ_ONLY = "此功能仅支持 QQ (aiocqhttp) 平台"
@@ -161,9 +164,9 @@ def _find_slime_chunks(seed: int, search_range: int) -> List[tuple]:
     return found
 
 
-@register("astrbot_plugin_zm_qqmanager", "ZM", "功能全面的 QQ 群管理插件", "1.0.4",
-          "https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager")
-class ZMQQManager(Star):
+@register("astrbot_plugin_zm_qqgroupmgr", "ZM", "功能全面的 QQ 群管理插件", PLUGIN_VERSION,
+          "https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr")
+class ZMQQGroupmgr(Star):
     """群管理插件主体。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -209,7 +212,7 @@ class ZMQQManager(Star):
             configured_host = str(self.config.get("file_host") or "0.0.0.0")
             # 云服务器无法直接绑定公网IP，强制使用 0.0.0.0
             if configured_host not in ("0.0.0.0", "127.0.0.1", "localhost"):
-                logger.warning(f"[ZM-QQManager] 检测到公网IP配置 {configured_host}，自动改为 0.0.0.0")
+                logger.warning(f"[ZM-QQGroupmgr] 检测到公网IP配置 {configured_host}，自动改为 0.0.0.0")
                 configured_host = "0.0.0.0"
 
             port = coerce_int(self.config.get("file_port"), 9977)
@@ -219,21 +222,21 @@ class ZMQQManager(Star):
 
             # 如果仍然失败，最后尝试回退到 0.0.0.0
             if error and "could not bind" in str(error) and configured_host != "0.0.0.0":
-                logger.warning(f"[ZM-QQManager] 配置的地址 {configured_host} 不可用，尝试使用 0.0.0.0")
+                logger.warning(f"[ZM-QQGroupmgr] 配置的地址 {configured_host} 不可用，尝试使用 0.0.0.0")
                 self.server = DownloadServer(self.files, host="0.0.0.0", port=port)
                 error = await self.server.start()
 
             if error:
-                logger.warning(f"[ZM-QQManager] {error}")
+                logger.warning(f"[ZM-QQGroupmgr] {error}")
 
             # 0.0.0.0 只是监听地址，直接写进下载链接的话谁都打不开
             if "0.0.0.0" in self.files.base_url():
                 logger.warning(
-                    "[ZM-QQManager] 下载链接当前会生成 http://0.0.0.0:%s，外部无法访问；"
+                    "[ZM-QQGroupmgr] 下载链接当前会生成 http://0.0.0.0:%s，外部无法访问；"
                     "请在插件配置 file_base_url 填写实际可访问的地址（如 http://公网IP:%s）"
                     % (port, port)
                 )
-        logger.info("[ZM-QQManager] 插件已加载 v1.0.4")
+        logger.info(f"[{PLUGIN_NAME}] 插件已加载 v{PLUGIN_VERSION}")
 
     def _spawn(self, coro) -> None:
         """启动后台任务并持有引用，直到它自己结束。"""
@@ -252,7 +255,7 @@ class ZMQQManager(Star):
             self.server = None
         for store in (self.settings, self.words_store, self.mutes_store, self.files_store):
             await store.save()
-        logger.info("[ZM-QQManager] 插件已卸载")
+        logger.info("[ZM-QQGroupmgr] 插件已卸载")
 
     # ------------------------------------------------------------------
     # 通用辅助
@@ -341,7 +344,7 @@ class ZMQQManager(Star):
                 await api.mute(int(group_id), int(user_id), duration)
                 await self.mutes.record(group_id, user_id, duration, reason, "自动检测")
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 自动禁言失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 自动禁言失败: {exc}")
 
     async def _bot_role(self, api: OneBotApi, group_id: str, event: AstrMessageEvent) -> str:
         """机器人在该群的身份：owner / admin / member。"""
@@ -379,7 +382,7 @@ class ZMQQManager(Star):
 
             await self.context.send_message(origin, MessageChain().message(text))
         except Exception as exc:
-            logger.warning(f"[ZM-QQManager] 主动发送消息失败: {exc}")
+            logger.warning(f"[ZM-QQGroupmgr] 主动发送消息失败: {exc}")
 
     async def _expire_pending(
         self, origin: str, key: str, token: str, delay: int, label: str
@@ -657,7 +660,7 @@ class ZMQQManager(Star):
         try:
             await api.mute_all(int(group_id), False)
         except RuntimeError as exc:
-            logger.warning(f"[ZM-QQManager] 自动解除全体禁言失败: {exc}")
+            logger.warning(f"[ZM-QQGroupmgr] 自动解除全体禁言失败: {exc}")
             return
 
         state.pop("muteall_until", None)
@@ -1094,7 +1097,7 @@ class ZMQQManager(Star):
             f"当前冷却时长: {'不限制' if cooldown <= 0 else format_duration(cooldown)}"
         )
         logger.info(
-            f"[ZM-QQManager] {event.get_sender_id()} 重置了 {', '.join(targets)} 的下载冷却"
+            f"[ZM-QQGroupmgr] {event.get_sender_id()} 重置了 {', '.join(targets)} 的下载冷却"
         )
         yield event.plain_result("\n".join(lines))
 
@@ -1221,7 +1224,7 @@ class ZMQQManager(Star):
             try:
                 path = await file_component.get_file()
             except Exception as exc:
-                logger.error(f"[ZM-QQManager] 获取文件失败: {exc}")
+                logger.error(f"[ZM-QQGroupmgr] 获取文件失败: {exc}")
 
         if not path or not Path(str(path)).exists():
             await event.send(event.plain_result(f"未能获取文件「{pending['name']}」的本地路径，上传失败"))
@@ -1241,14 +1244,14 @@ class ZMQQManager(Star):
                 # 群主同样有权删群文件，顺手清理，失败不影响结果
                 await self._delete_group_file(api, group_id_str, file_component)
                 cleanup = "\n已撤回群内的文件消息"
-                logger.info(f"[ZM-QQManager] 机器人是群主，已撤回群 {group_id_str} 的上传消息")
+                logger.info(f"[ZM-QQGroupmgr] 机器人是群主，已撤回群 {group_id_str} 的上传消息")
             elif bot_role == "admin":
                 if not await self._delete_group_file(api, group_id_str, file_component):
                     await event.send(event.plain_result("上传失败：删除群文件失败，请手动删除后重试"))
                     event.stop_event()
                     return
                 cleanup = "\n已删除群文件中的该文件"
-                logger.info(f"[ZM-QQManager] 机器人是群管理员，已删除群 {group_id_str} 的群文件")
+                logger.info(f"[ZM-QQGroupmgr] 机器人是群管理员，已删除群 {group_id_str} 的群文件")
             else:
                 await event.send(
                     event.plain_result(
@@ -1280,7 +1283,7 @@ class ZMQQManager(Star):
             or getattr(file_component, "id", None)
         )
         if not file_id:
-            logger.warning("[ZM-QQManager] 未能取得群文件 file_id，无法删除群文件")
+            logger.warning("[ZM-QQGroupmgr] 未能取得群文件 file_id，无法删除群文件")
             return False
 
         # 用 try_ok 而不是"返回值非 None"：delete_group_file 成功时 data 就是
@@ -1378,7 +1381,7 @@ class ZMQQManager(Star):
             return
 
         logger.info(
-            f"[ZM-QQManager] {event.get_sender_id()} 在群 {group_id} 构造合并转发「{title}」"
+            f"[ZM-QQGroupmgr] {event.get_sender_id()} 在群 {group_id} 构造合并转发「{title}」"
             f"，共 {len(entries)} 条"
         )
 
@@ -1483,9 +1486,9 @@ class ZMQQManager(Star):
         if user_id in self._ban_list(group_id):
             try:
                 await api.kick(int(group_id), int(user_id), reject=True)
-                logger.info(f"[ZM-QQManager] 封禁用户 {user_id} 在群 {group_id} 发言，已踢出")
+                logger.info(f"[ZM-QQGroupmgr] 封禁用户 {user_id} 在群 {group_id} 发言，已踢出")
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 踢出封禁用户失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 踢出封禁用户失败: {exc}")
             event.stop_event()
             return
 
@@ -1523,7 +1526,7 @@ class ZMQQManager(Star):
             ),
         )
         logger.info(
-            f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 触发广告拦截（评分 {score}）"
+            f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 触发广告拦截（评分 {score}）"
         )
         event.stop_event()
         return True
@@ -1551,7 +1554,7 @@ class ZMQQManager(Star):
         )
         await api.send_group_msg(int(group_id), message)
         logger.info(
-            f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 命中敏感词「{word}」"
+            f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 命中敏感词「{word}」"
             f"，已撤回并禁言 {duration} 秒"
         )
         event.stop_event()
@@ -1594,7 +1597,7 @@ class ZMQQManager(Star):
             duration="永久" if duration == 0 else format_duration(duration),
         )
         await api.send_group_msg(int(group_id), message)
-        logger.info(f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 触发刷屏检测: {reason}")
+        logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 触发刷屏检测: {reason}")
         event.stop_event()
         return True
 
@@ -1645,16 +1648,16 @@ class ZMQQManager(Star):
                 await self.mutes.record(group_id, user_id, duration, f"名片违规: {reason}", "自动检测")
                 message += f"\n已禁言 {format_duration(duration)}"
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 名片违规禁言失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 名片违规禁言失败: {exc}")
         elif action == "kick":
             try:
                 await api.kick(int(group_id), int(user_id))
                 message += "\n已移出本群"
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 名片违规踢出失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 名片违规踢出失败: {exc}")
 
         await api.send_group_msg(int(group_id), message)
-        logger.info(f"[ZM-QQManager] 群 {group_id} 成员 {user_id} 名片违规: {reason}")
+        logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 名片违规: {reason}")
 
     # ------------------------------------------------------------------
     # 成员管理（踢出 / 封禁 / 管理员 / 头衔）
@@ -1776,7 +1779,7 @@ class ZMQQManager(Star):
             try:
                 await api.kick(int(group_id), int(user_id), reject=True)
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 封禁踢出失败 {user_id}: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 封禁踢出失败 {user_id}: {exc}")
         await self.settings.save()
         yield event.plain_result(
             f"已封禁 {len(added)} 人: {', '.join(added)}\n后续加群申请将被自动拒绝"
@@ -2003,11 +2006,11 @@ class ZMQQManager(Star):
 
         total = len(pending)
         logger.info(
-            f"[ZM-QQManager] 群 {group_id} 批量撤回：来源 {source}，"
+            f"[ZM-QQGroupmgr] 群 {group_id} 批量撤回：来源 {source}，"
             f"目标 {total} 条，成功 {removed} 条，失败 {len(failures)} 条"
         )
         for line in failures:
-            logger.warning(f"[ZM-QQManager] 群 {group_id} 撤回失败 {line}")
+            logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 撤回失败 {line}")
 
         if not failures:
             yield event.plain_result(f"已撤回 {removed} 条消息")
@@ -2294,7 +2297,7 @@ class ZMQQManager(Star):
                 failed.append(f"{group_id}({truncate(str(exc), 30)})")
 
         logger.info(
-            f"[ZM-QQManager] {event.get_sender_id()} 将 {len(succeeded)} 个群改名为「{name}」"
+            f"[ZM-QQGroupmgr] {event.get_sender_id()} 将 {len(succeeded)} 个群改名为「{name}」"
         )
         yield event.plain_result(
             self._batch_report(f"群名称已改为「{name}」", succeeded, failed)
@@ -2375,7 +2378,7 @@ class ZMQQManager(Star):
             lines.append("提示: 部分协议端即使返回成功也可能被腾讯侧拒绝，请自行确认效果")
 
         logger.info(
-            f"[ZM-QQManager] {event.get_sender_id()} 为 {len(succeeded)} 个群更换了头像"
+            f"[ZM-QQGroupmgr] {event.get_sender_id()} 为 {len(succeeded)} 个群更换了头像"
         )
         yield event.plain_result("\n".join(lines))
 
@@ -2484,7 +2487,7 @@ class ZMQQManager(Star):
             if recall:
                 lines.append(recall)
 
-        logger.info(f"[ZM-QQManager] {event.get_sender_id()} 在群 {group_id} 发布了公告")
+        logger.info(f"[ZM-QQGroupmgr] {event.get_sender_id()} 在群 {group_id} 发布了公告")
         yield event.plain_result("\n".join(lines))
 
     # ------------------------------------------------------------------
@@ -2814,9 +2817,9 @@ class ZMQQManager(Star):
         if user_id in self._ban_list(group_id):
             try:
                 await api.kick(int(group_id), int(user_id), reject=True)
-                logger.info(f"[ZM-QQManager] 封禁用户 {user_id} 尝试加入群 {group_id}，已自动踢出")
+                logger.info(f"[ZM-QQGroupmgr] 封禁用户 {user_id} 尝试加入群 {group_id}，已自动踢出")
             except RuntimeError as exc:
-                logger.warning(f"[ZM-QQManager] 踢出封禁用户失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 踢出封禁用户失败: {exc}")
             event.stop_event()
             return
 
@@ -2891,7 +2894,7 @@ class ZMQQManager(Star):
                 # base64 字符集里没有 , [ ]，可以直接拼进 CQ 码
                 message += f"[CQ:image,file={to_base64_uri(data)}]"
             except OSError as exc:
-                logger.warning(f"[ZM-QQManager] 读取退群提示图片失败: {exc}")
+                logger.warning(f"[ZM-QQGroupmgr] 读取退群提示图片失败: {exc}")
 
         if message:
             await api.send_group_msg(int(group_id), message)
@@ -2904,9 +2907,43 @@ class ZMQQManager(Star):
     @filter.command("zmhelp", alias={"群管帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         """/zmhelp - 查看全部命令"""
+        title = f"{PLUGIN_NAME} v{PLUGIN_VERSION}"
+        text = self._help_text()
+
+        # 长帮助交给 AstrBot 自动转合并转发时，卡片标题会是协议端默认的
+        # 「群聊的聊天记录」；这里自己发合并转发，把标题定成插件名 + 版本号。
+        api = OneBotApi(event)
+        group_id = event.get_group_id()
+        if api.available and group_id:
+            bot_id = str(event.get_self_id() or "10000")
+            sent = await api.send_forward(
+                int(group_id),
+                [forward_node(bot_id, title, text)],
+                source=title,
+                news=[{"text": "命令一览"}],
+                summary="查看 1 条转发消息",
+                prompt=f"[{title}]",
+            )
+            if sent is not None:
+                return
+
+        yield event.plain_result(text)
+
+    def _help_text(self) -> str:
+        """帮助正文。插件配置 help_menu_text 非空时用它，占位符 {name} {version} {cooldown}。"""
         cooldown = self.files.cooldown_seconds()
-        yield event.plain_result(
-            "ZM-QQManager v1.0.4 命令一览\n"
+        cooldown_text = "不限制" if cooldown <= 0 else format_duration(cooldown)
+
+        custom = str(self.config.get("help_menu_text") or "").strip()
+        if custom:
+            return (
+                custom.replace("{name}", PLUGIN_NAME)
+                .replace("{version}", PLUGIN_VERSION)
+                .replace("{cooldown}", cooldown_text)
+            )
+
+        return (
+            f"{PLUGIN_NAME} v{PLUGIN_VERSION} 命令一览\n"
             "除标注外均仅 AstrBot 管理员可用；括号内为命令缩写\n\n"
             "【禁言】\n"
             "/mute <成员> [时长]      禁言成员，默认 10 分钟\n"
@@ -2935,7 +2972,7 @@ class ZMQQManager(Star):
             "                            更新已上传目标文件的版本字段，内容为补充解释更新内容\n"
             "/file download cdreset <成员>  重置该成员的下载冷却（缩写 /f dl cdreset <成员>）\n"
             "/file delete <name>         删除文件（缩写 /f del、/f rm）\n"
-            f"下载冷却: {'不限制' if cooldown <= 0 else format_duration(cooldown)}"
+            f"下载冷却: {cooldown_text}"
             "（可在插件配置 file_download_cooldown 中自定义）\n\n"
             "【成员】\n"
             "/kick <成员>            踢出成员\n"

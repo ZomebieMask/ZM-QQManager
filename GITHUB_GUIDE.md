@@ -1,4 +1,4 @@
-# 如何将 ZM-QQManager 发布到 GitHub 和 AstrBot 插件市场
+# 如何将 ZM-QQGroupmgr 发布到 GitHub 和 AstrBot 插件市场
 
 ## 📝 概述
 
@@ -12,7 +12,7 @@
 
 1. **创建 GitHub 仓库**
    - 访问 https://github.com/new
-   - 仓库名称：`ZM-QQManager`
+   - 仓库名称：`ZM-QQGroupmgr`
    - 描述：`功能强大的 QQ 群管理插件 for AstrBot`
    - 选择 `Public`（公开）
    - **不要**勾选 "Add a README file"（我们已经有了）
@@ -20,15 +20,15 @@
 
 2. **获取仓库 URL**
    - 创建后会看到快速设置页面
-   - 复制仓库 URL，例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git`
+   - 复制仓库 URL，例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git`
 
 3. **推送代码**
    ```bash
    # 在插件目录下执行
-   cd E:\claude-workspace\astrbot-plugins\ZM-QQManager
+   cd E:\claude-workspace\astrbot-plugins\ZM-QQGroupmgr
    
    # 添加远程仓库（替换 yourusername 为你的 GitHub 用户名）
-   git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager.git
+   git remote add origin https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
    
    # 推送代码
    git branch -M main
@@ -55,8 +55,8 @@
 gh auth login
 
 # 创建仓库并推送
-cd E:\claude-workspace\astrbot-plugins\ZM-QQManager
-gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin --push
+cd E:\claude-workspace\astrbot-plugins\ZM-QQGroupmgr
+gh repo create astrbot_plugin_zm_qqgroupmgr --public --source=. --remote=origin --push
 ```
 
 ### 第二步：完善 GitHub 仓库
@@ -69,13 +69,13 @@ gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin -
 2. **创建 Release**
    - 点击右侧 `Releases` → `Create a new release`
    - Tag version: `v1.0.0`
-   - Release title: `ZM-QQManager v1.0.0`
+   - Release title: `ZM-QQGroupmgr v1.0.0`
    - 描述：复制 CHANGELOG.md 的内容
    - 点击 `Publish release`
 
 3. **更新 metadata.yaml**
    - 将 `repo` 字段改为你的实际仓库地址
-   - 例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager`
+   - 例如：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr`
    - 提交更新：
    ```bash
    git add metadata.yaml
@@ -100,7 +100,7 @@ gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin -
 
 2. **提交插件**
    - 点击「发布新插件」或类似按钮
-   - 输入 GitHub 仓库 URL：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqmanager`
+   - 输入 GitHub 仓库 URL：`https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr`
    - 点击「提交」
 
 3. **自动解析**
@@ -109,7 +109,7 @@ gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin -
 
 4. **确认发布**
    - 检查插件信息：
-     - 名称：ZM-QQManager
+     - 名称：ZM-QQGroupmgr
      - 版本：1.0.0
      - 作者：ZM
      - 描述：功能是否完整
@@ -122,7 +122,7 @@ gh repo create astrbot_plugin_zm_qqmanager --public --source=. --remote=origin -
 ### 发布后
 
 1. **查看插件页面**
-   - 在插件市场搜索 `ZM-QQManager`
+   - 在插件市场搜索 `ZM-QQGroupmgr`
    - 确认信息显示正确
 
 2. **测试安装**
