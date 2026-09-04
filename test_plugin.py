@@ -231,6 +231,60 @@ def test_sha_reverify(main):
     print("  sha 验证: 缓存命中 / 新 commit 复核 / 闲聊不查询 OK")
 
 
+def test_sha_retry_kick(main):
+    """连错 5 次 sha 直接踢，别让人拿 GitHub 配额当刷屏工具。"""
+    import asyncio
+    import time
+
+    kicked, sent, fetches = [], [], []
+
+    class FakeApi:
+        async def stranger_name(self, uid):
+            return "刷屏的"
+
+        async def kick(self, gid, uid, **kw):
+            kicked.append((gid, uid))
+
+        async def send_group_msg(self, gid, msg):
+            sent.append(msg)
+
+    class FakeEvent:
+        def stop_event(self):
+            pass
+
+    class FakeCache:
+        async def latest(self, repo, ttl=300, force=False):
+            fetches.append(repo)
+            return "a" * 40, ""
+
+    inst = object.__new__(main.ZMQQGroupmgr)
+    inst._sha_cache = FakeCache()
+    key = ("1", "2")
+    inst._pending_verify = {
+        key: {"code": "b" * 40, "is_sha": True, "repo": "a/b",
+              "deadline": time.time() + 600}
+    }
+    check = lambda text: asyncio.run(
+        main.ZMQQGroupmgr._check_verify(inst, FakeEvent(), FakeApi(), "1", "2", text)
+    )
+
+    for i in range(main.MAX_SHA_TRIES - 1):
+        assert check("0123456") is False, f"第 {i + 1} 次错还不该踢"
+        assert not kicked
+    # 闲聊不计数、也不查 GitHub
+    assert check("在吗") is False
+    assert inst._pending_verify[key]["tries"] == main.MAX_SHA_TRIES - 1
+    assert len(fetches) == main.MAX_SHA_TRIES - 1, fetches
+
+    assert check("0123456") is True, "第 5 次错应当场处理掉这条消息"
+    assert kicked == [(1, 2)], kicked
+    assert "连续 5 次验证失败" in sent[0], sent
+    assert key not in inst._pending_verify, "踢完要清掉登记，别再触发超时任务"
+    assert check("0123456") is False, "已经踢了，后面的消息不归验证管"
+
+    print("  sha 连错: 计数 / 闲聊不计 / 第 5 次踢出 / 清登记 OK")
+
+
 def test_mute_args():
     """/mute <成员> [时长] [理由] 的分段：理由里的 QQ 号不能变成禁言对象。"""
     utils = sys.modules["zmplugin.core.utils"]
@@ -344,6 +398,7 @@ if __name__ == "__main__":
     test_data_dir_migration()
     test_join_approval()
     test_sha_reverify(main)
+    test_sha_retry_kick(main)
     test_mute_args()
     test_long_mute()
     print(f"全部自检通过 —— {main.PLUGIN_NAME} v{main.PLUGIN_VERSION}")

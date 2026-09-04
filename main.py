@@ -88,6 +88,8 @@ UPDATE_CARD_TITLE = "ZM_QQGroupmgr New-Update-Available!!!"
 DEFAULT_POLL_MINUTES = 30
 # 入群验证时成员发来的 sha 对不上，最多这么频繁地去 GitHub 复核一次
 SHA_RECHECK_TTL = 60
+# 同一个人连错这么多次 sha 就直接踢，别让他把 GitHub 配额刷光
+MAX_SHA_TRIES = 5
 DEFAULT_MUTE_REASON = "管理员手动禁言"
 
 ADMIN_ONLY = "此命令仅群聊可用"
@@ -1346,6 +1348,22 @@ class ZMQQGroupmgr(Star):
         )
         logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 验证超时，已踢出")
 
+    async def _kick_wrong_sha(self, api: OneBotApi, group_id: str, user_id: str) -> None:
+        """sha 连错 MAX_SHA_TRIES 次，不等超时直接踢。"""
+        name = await api.stranger_name(user_id)
+        try:
+            await api.kick(int(group_id), int(user_id))
+        except RuntimeError as exc:
+            logger.warning(f"[ZM-QQGroupmgr] 连错踢出 {user_id} 失败: {exc}")
+            return
+        await api.send_group_msg(
+            int(group_id),
+            f"{escape_cq(name)}（{user_id}）连续 {MAX_SHA_TRIES} 次验证失败，已踢出",
+        )
+        logger.info(
+            f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 连错 {MAX_SHA_TRIES} 次，已踢出"
+        )
+
     async def _verify_matches(self, pending: dict, text: str) -> bool:
         """比对验证码；sha 模式下允许成员发的是比缓存更新的那个 commit。
 
@@ -1371,6 +1389,15 @@ class ZMQQGroupmgr(Star):
             self._pending_verify.pop(key, None)
             return False
         if not await self._verify_matches(pending, text):
+            # 每次「像 sha 但不对」的消息都要去问一次 GitHub，放着不管等于
+            # 把未认证 API 那 60 次/小时的配额交给刷屏的人，错够 5 次直接踢
+            if pending.get("is_sha") and is_sha_text(text):
+                pending["tries"] = int(pending.get("tries") or 0) + 1
+                if pending["tries"] >= MAX_SHA_TRIES:
+                    self._pending_verify.pop(key, None)
+                    await self._kick_wrong_sha(api, group_id, user_id)
+                    event.stop_event()
+                    return True
             return False
 
         self._pending_verify.pop(key, None)

@@ -363,6 +363,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 - 选 `sha` 时机器人回复 `指令执行成功 目前sha值为 <sha>`，之后每 `join_sha_poll_minutes` 分钟刷新一次（默认 **30** 分钟）
 - 成员发来的 sha 与缓存对不上时会**当场再查一次 GitHub**（最多每分钟一次），仓库在轮询间隔里又推了新 commit 也照样放行
 - 取不到 sha 也照常挂验证，**到点仍然踢出**（只有像 sha 的消息才会触发复核，闲聊不会浪费 API 配额）
+- 同一个人连错 **5** 次 sha 直接踢，不等超时（防止拿复核请求刷 GitHub 配额；闲聊不计数）
 - 待验证状态只在内存里，**插件重载后未完成的验证会作废**（不会踢人）
 
 **② / ③ 回答正确问题（static / dynamic）** —— 走 QQ 自带的加群审批，人根本进不来
