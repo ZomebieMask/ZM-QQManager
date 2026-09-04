@@ -181,9 +181,9 @@
   },
   "join_sha_poll_minutes": {
     "description": "GitHub commit sha 的查询间隔（分钟）",
-    "hint": "验证码类型 sha 与 /ja set dynamic 共用这个间隔。默认 5 分钟，最大 9999",
+    "hint": "验证码类型 sha 与 /ja set dynamic 共用这个间隔。默认 30 分钟，最大 9999（GitHub 未认证 API 每小时仅 60 次）",
     "type": "int",
-    "default": 5
+    "default": 30
   },
   "join_question_text": {
     "description": "「需要正确回答问题」时展示给申请人的问题",

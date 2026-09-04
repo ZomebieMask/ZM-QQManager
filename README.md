@@ -151,9 +151,9 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 
 | 指令 | 说明 |
 | :--- | :--- |
-| `/mute <成员> [时长]`（`/m`） | 禁言。`<成员>` 可 @ 或填 QQ 号，不填时长默认 10 分钟 |
+| `/mute <成员> [时长] [理由]`（`/m`） | 禁言。`<成员>` 可 @ 或填 QQ 号，不填时长默认 10 分钟；理由写在时长后面，`/mutelist` 里能看到 |
 | `/unmute <成员>`（`/um`） | 解除禁言 |
-| `/mutelist` | 本群在禁成员 + 各自剩余时长 |
+| `/mutelist` | 本群在禁成员 + 各自剩余时长、禁言理由与操作者 |
 | `/muteall [时长\|off]` | 全体禁言，**不带参数默认永久**，`off` 解除 |
 | `/kick <成员>` | 踢出指定成员 |
 | `/kick <时间>` | 踢出该时间内未发言的成员，如 `/kick 20d` |
@@ -164,6 +164,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 
 ```
 /m @张三 30d             禁言 30 天
+/m @张三 1h 发广告       禁言 1 小时并记下理由
 /m @张三 3650d           禁言 10 年（上限）
 /muteall 2h              全群禁言 2 小时
 /kick 1m                 清理 1 个月没发言的人
@@ -359,8 +360,9 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 ```
 
 - 限时由 `join_verify_minutes` 决定（默认 **1** 分钟，最大 **30**），超时**直接踢出**
-- 选 `sha` 时机器人回复 `指令执行成功 目前sha值为 <sha>`，之后每 `join_sha_poll_minutes` 分钟刷新一次
-- sha 查不到时**不会踢人**（没有正确答案就踢人纯属误伤）
+- 选 `sha` 时机器人回复 `指令执行成功 目前sha值为 <sha>`，之后每 `join_sha_poll_minutes` 分钟刷新一次（默认 **30** 分钟）
+- 成员发来的 sha 与缓存对不上时会**当场再查一次 GitHub**（最多每分钟一次），仓库在轮询间隔里又推了新 commit 也照样放行
+- 取不到 sha 也照常挂验证，**到点仍然踢出**（只有像 sha 的消息才会触发复核，闲聊不会浪费 API 配额）
 - 待验证状态只在内存里，**插件重载后未完成的验证会作废**（不会踢人）
 
 **② / ③ 回答正确问题（static / dynamic）** —— 走 QQ 自带的加群审批，人根本进不来
@@ -429,7 +431,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 | 📁 文件服务 | `file_server_enabled` `file_host` `file_port` `file_base_url` `file_default_ttl` `file_download_cooldown` `file_cooldown_tip` `file_private_only_tip` `file_link_expired_tip` |
 | ☠️ 赛博击杀 | `kill_template` `kill_notify_all_groups` |
 | 🖼️ 图片交互 | `media_wait_timeout`（等待补发图片/答复秒数，默认 60）`avatar_recall` `broadcast_recall` `farewell_recall`（均默认开启） |
-| 🚪 进群审批 | `join_verify_minutes` `join_code_digits` `join_sha_poll_minutes` `join_question_text` `join_verify_tip` `join_sha_tip` `join_pass_tip` `join_timeout_tip` `join_decline_tip` |
+| 🚪 进群审批 | `join_verify_minutes` `join_code_digits` `join_sha_poll_minutes`(默认 30 分钟) `join_question_text` `join_verify_tip` `join_sha_tip` `join_pass_tip` `join_timeout_tip` `join_decline_tip` |
 | 🔔 更新通知 | `update_check_days` `update_tip` |
 | 📜 帮助菜单 | `help_menu_text` —— 留空用内置完整菜单；填写后 `/zmhelp` 只显示你写的内容，支持 `{name}` `{version}` `{cooldown}` 三个占位符 |
 

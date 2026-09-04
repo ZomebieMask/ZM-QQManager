@@ -190,6 +190,47 @@ def test_join_approval():
     print("  进群审批: 验证码 / sha 前缀 / 仓库解析 / 版本比较 OK")
 
 
+def test_sha_reverify(main):
+    """缓存里的 sha 过时了，成员发来的新 sha 也要认，否则等于白等一场再被踢。"""
+    import asyncio
+
+    ja = sys.modules["zmplugin.core.joinapproval"]
+    old = "0123456789abcdef0123456789abcdef01234567"
+    new = "fedcba9876543210fedcba9876543210fedcba98"
+
+    assert ja.is_sha_text(" 0123456 ") and ja.is_sha_text(old)
+    assert not ja.is_sha_text("012345"), "6 位不算 sha"
+    assert not ja.is_sha_text("群里随便一句话") and not ja.is_sha_text("hello world")
+
+    calls = []
+
+    class FakeCache:
+        async def latest(self, repo, ttl=300, force=False):
+            calls.append(repo)
+            return new, ""
+
+    inst = object.__new__(main.ZMQQGroupmgr)
+    inst._sha_cache = FakeCache()
+    match = lambda pending, text: asyncio.run(
+        main.ZMQQGroupmgr._verify_matches(inst, pending, text)
+    )
+    pending = {"code": old, "is_sha": True, "repo": "a/b"}
+
+    assert match(pending, old[:7]), "缓存里的那个 sha 当然算对"
+    assert not calls, "对上了就别再去问 GitHub"
+    assert match(pending, new[:7]), "仓库又推了新 commit，也该放行"
+    assert len(calls) == 1
+    assert not match(pending, "1234567"), "不相干的 sha 仍然不通过"
+    assert not match(pending, "群主你好呀"), "闲聊不该触发 GitHub 查询"
+    assert len(calls) == 2
+
+    # 进群时没取到 sha（GitHub 抽风），验证仍然要能救回来
+    assert match({"code": "", "is_sha": True, "repo": "a/b"}, new[:7])
+    # 非 sha 验证码不该走复核
+    assert not match({"code": "ABC123", "is_sha": False, "repo": "a/b"}, new[:7])
+    print("  sha 验证: 缓存命中 / 新 commit 复核 / 闲聊不查询 OK")
+
+
 def test_long_mute():
     """超过 30 天的禁言要分段下发并按时续期。"""
     import asyncio
@@ -262,5 +303,6 @@ if __name__ == "__main__":
     test_entry_path(main)
     test_data_dir_migration()
     test_join_approval()
+    test_sha_reverify(main)
     test_long_mute()
     print(f"全部自检通过 —— {main.PLUGIN_NAME} v{main.PLUGIN_VERSION}")

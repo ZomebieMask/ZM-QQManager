@@ -34,6 +34,7 @@ from .core.joinapproval import (
     VALID_DIGITS,
     ShaCache,
     code_matches,
+    is_sha_text,
     latest_release_tag,
     make_code,
     parse_repo,
@@ -81,6 +82,12 @@ PLUGIN_MARKET_URL = (
     "https://cloud.astrbot.app/plugin/ZomebieMask/astrbot_plugin_zm_qqgroupmgr"
 )
 UPDATE_CARD_TITLE = "ZM_QQGroupmgr New-Update-Available!!!"
+
+# GitHub 未认证 API 每小时只有 60 次，默认半小时查一次足够
+DEFAULT_POLL_MINUTES = 30
+# 入群验证时成员发来的 sha 对不上，最多这么频繁地去 GitHub 复核一次
+SHA_RECHECK_TTL = 60
+DEFAULT_MUTE_REASON = "管理员手动禁言"
 
 ADMIN_ONLY = "此命令仅群聊可用"
 QQ_ONLY = "此功能仅支持 QQ (aiocqhttp) 平台"
@@ -576,7 +583,7 @@ class ZMQQGroupmgr(Star):
 
     def _poll_minutes(self) -> int:
         """GitHub sha 的查询间隔（分钟）。"""
-        value = coerce_int(self.config.get("join_sha_poll_minutes"), 5)
+        value = coerce_int(self.config.get("join_sha_poll_minutes"), DEFAULT_POLL_MINUTES)
         return max(1, min(value, MAX_POLL_MINUTES))
 
     async def _ticker(self) -> None:
@@ -758,7 +765,7 @@ class ZMQQGroupmgr(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("mute", alias={"m"})
     async def cmd_mute(self, event: AstrMessageEvent):
-        """/mute <成员> [时长] - 禁言成员，默认 10 分钟（缩写 /m）"""
+        """/mute <成员> [时长] [理由] - 禁言成员，默认 10 分钟（缩写 /m）"""
         group_id = self._require_group(event)
         if not group_id:
             yield event.plain_result(ADMIN_ONLY)
@@ -772,22 +779,26 @@ class ZMQQGroupmgr(Star):
         raw = self._raw_after(event, "mute", "m")
         targets = extract_targets(event, raw)
         if not targets:
-            yield event.plain_result("用法: /mute <成员> [时长]\n例: /mute @某人 10m、/m 12345 1h")
+            yield event.plain_result(
+                "用法: /mute <成员> [时长] [理由]\n"
+                "例: /mute @某人 10m 刷屏、/m 12345 1h"
+            )
             return
 
-        # 时长取最后一段不含目标 QQ 号的参数
+        # 去掉目标后，第一段能当时长解析的就是时长，剩下的整段算理由
         duration = 600
         capped = 0
-        parts = [p for p in raw.split() if p.strip()]
-        for part in reversed(parts):
-            if any(t in part for t in targets):
-                continue
-            parsed = parse_duration(part, default_unit="m")
+        rest = [
+            p for p in raw.split() if p.strip() and not any(t in p for t in targets)
+        ]
+        if rest:
+            parsed = parse_duration(rest[0], default_unit="m")
             if parsed is not None:
                 duration = min(parsed, MAX_DURATION)
                 if parsed > MAX_DURATION:
                     capped = parsed
-                break
+                rest = rest[1:]
+        reason = " ".join(rest).strip() or DEFAULT_MUTE_REASON
 
         succeeded, failed = [], []
         for user_id in targets:
@@ -795,7 +806,7 @@ class ZMQQGroupmgr(Star):
                 # QQ 只接受 30 天以内的禁言，更长的先禁 30 天，由后台定时续期
                 await api.mute(int(group_id), int(user_id), chunk_duration(duration))
                 await self.mutes.record(
-                    group_id, user_id, duration, "管理员手动禁言", str(event.get_sender_id())
+                    group_id, user_id, duration, reason, str(event.get_sender_id())
                 )
                 succeeded.append(user_id)
             except RuntimeError as exc:
@@ -809,6 +820,8 @@ class ZMQQGroupmgr(Star):
         if succeeded:
             label = "解除禁言" if duration == 0 else f"禁言 {format_duration(duration)}"
             lines.append(f"已对 {len(succeeded)} 名成员{label}: {', '.join(succeeded)}")
+            if duration != 0 and reason != DEFAULT_MUTE_REASON:
+                lines.append(f"理由: {truncate(reason, 60)}")
             if duration > MUTE_CHUNK:
                 lines.append(
                     f"QQ 单次最多禁言 {format_duration(MUTE_CHUNK)}，"
@@ -876,8 +889,8 @@ class ZMQQGroupmgr(Star):
         for index, item in enumerate(muted, start=1):
             remaining = format_duration(item["remaining"]) if item["remaining"] else "永久"
             line = f"{index}. {item['name']}（{item['user_id']}）剩余 {remaining}"
-            if item.get("reason"):
-                line += f"\n   原因: {truncate(item['reason'], 40)}"
+            reason = item.get("reason") or "未记录（非本插件发起的禁言）"
+            line += f"\n   原因: {truncate(reason, 40)}"
             if item.get("operator"):
                 line += f" | 操作者: {item['operator']}"
             lines.append(line)
@@ -1234,13 +1247,14 @@ class ZMQQGroupmgr(Star):
             return
 
         minutes = self._verify_minutes()
+        repo = ""
         if code_type == CODE_SHA:
             repo = str(state.get("repo") or "")
             code, error = await self._sha_cache.latest(repo, ttl=self._poll_minutes() * 60)
             if not code:
-                # 查不到 sha 就没有正确答案，这时候踢人纯属误伤
-                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 取 sha 失败，跳过验证: {error}")
-                return
+                # 取不到也照常挂验证：成员发来的 sha 会当场再问一次 GitHub，
+                # 到点还没发对就照踢，不能因为 GitHub 抽风就放人进来
+                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 取 sha 失败: {error}")
             template = str(self.config.get("join_sha_tip") or DEFAULT_JOIN_SHA_TIP)
             message = render_cq(
                 template,
@@ -1270,6 +1284,7 @@ class ZMQQGroupmgr(Star):
         self._pending_verify[(str(group_id), str(user_id))] = {
             "code": code,
             "is_sha": code_type == CODE_SHA,
+            "repo": repo,
             "deadline": time.time() + minutes * 60,
         }
         await api.send_group_msg(int(group_id), message)
@@ -1321,6 +1336,21 @@ class ZMQQGroupmgr(Star):
         )
         logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 验证超时，已踢出")
 
+    async def _verify_matches(self, pending: dict, text: str) -> bool:
+        """比对验证码；sha 模式下允许成员发的是比缓存更新的那个 commit。
+
+        查询间隔可以设到几十分钟，期间仓库完全可能又推了几个 commit，
+        照着 GitHub 页面抄的成员不该因为我们缓存旧就被踢。
+        """
+        is_sha = bool(pending.get("is_sha"))
+        if code_matches(pending.get("code", ""), text, is_sha):
+            return True
+        repo = str(pending.get("repo") or "")
+        if not is_sha or not repo or not is_sha_text(text):
+            return False
+        fresh, _ = await self._sha_cache.latest(repo, ttl=SHA_RECHECK_TTL)
+        return bool(fresh) and code_matches(fresh, text, True)
+
     async def _check_verify(self, event, api, group_id, user_id, text) -> bool:
         """待验证成员发言时比对验证码，返回是否已处理这条消息。"""
         key = (str(group_id), str(user_id))
@@ -1330,7 +1360,7 @@ class ZMQQGroupmgr(Star):
         if time.time() > pending["deadline"]:
             self._pending_verify.pop(key, None)
             return False
-        if not code_matches(pending["code"], text, pending.get("is_sha", False)):
+        if not await self._verify_matches(pending, text):
             return False
 
         self._pending_verify.pop(key, None)
@@ -3632,9 +3662,9 @@ class ZMQQGroupmgr(Star):
             f"{PLUGIN_NAME} v{PLUGIN_VERSION} 命令一览\n"
             "除标注外均仅 AstrBot 管理员可用；括号内为命令缩写\n\n"
             "【禁言】\n"
-            "/mute <成员> [时长]      禁言成员，默认 10 分钟（缩写 /m）\n"
+            "/mute <成员> [时长] [理由] 禁言成员，默认 10 分钟（缩写 /m）\n"
             "/unmute <成员>          解除禁言（缩写 /um）\n"
-            "/mutelist               查看禁言列表与剩余时长\n"
+            "/mutelist               查看禁言列表、剩余时长与理由\n"
             "/muteall [时长]          全体禁言，默认永久\n"
             "/muteall off            解除全体禁言\n"
             "  单次上限 3650 天；超过 30 天的部分由机器人自动续期\n\n"

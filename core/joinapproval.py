@@ -86,6 +86,16 @@ def code_matches(expected: str, answer: str, is_sha: bool = False) -> bool:
     return secrets.compare_digest(expected[: len(answer)], answer)
 
 
+def is_sha_text(text: str) -> bool:
+    """判断一句话是不是「看起来像 commit sha」。
+
+    只有像 sha 的消息才值得为它去问一次 GitHub，否则待验证成员随便聊两句
+    就能把 API 配额刷光。
+    """
+    text = (text or "").strip()
+    return bool(re.fullmatch(r"[0-9a-fA-F]{%d,40}" % MIN_SHA_PREFIX, text))
+
+
 def parse_repo(text: str) -> Optional[str]:
     """把 GitHub 仓库链接或 ``owner/name`` 解析成 ``owner/name``。"""
     text = (text or "").strip().strip("<>")
