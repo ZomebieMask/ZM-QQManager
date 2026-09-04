@@ -145,10 +145,122 @@ def test_entry_path(main):
     print("  文件仓库: 旧路径回落 / 有效路径 / 真丢失 / 越界拦截 OK")
 
 
+def test_join_approval():
+    """验证码生成与比对、仓库解析、版本比较。"""
+    ja = sys.modules["zmplugin.core.joinapproval"]
+
+    assert ja.make_code("number", 4).isdigit() and len(ja.make_code("number", 4)) == 4
+    assert len(ja.make_code("number", 6)) == 6
+    assert len(ja.make_code("number", 5)) == 6, "非法位数应回落 6"
+    letter = ja.make_code("letter")
+    assert len(letter) == 6 and letter.isalpha() and letter.isupper()
+    mix = ja.make_code("mix", 4)
+    assert len(mix) == 10 and sum(c.isdigit() for c in mix) == 4
+    assert len({ja.make_code("mix", 6) for _ in range(20)}) > 1, "验证码不该固定"
+
+    assert ja.code_matches("A1b2", " a1B2 ")
+    assert not ja.code_matches("A1b2", "a1b3")
+    assert not ja.code_matches("A1b2", "") and not ja.code_matches("", "x")
+    assert not ja.code_matches("A1b2", "a1b23"), "长度不同不该通过"
+    # compare_digest 遇到非 ASCII 会抛 TypeError，群里随便一句中文都会命中
+    assert not ja.code_matches("A1b2", "你好啊")
+    assert not ja.code_matches("A1b2", "群里聊天的一句话，带标点。")
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    assert ja.code_matches(sha, sha, is_sha=True)
+    assert ja.code_matches(sha, "0123456", is_sha=True), "7 位前缀应放行"
+    assert not ja.code_matches(sha, "012345", is_sha=True), "6 位太短"
+    assert not ja.code_matches(sha, "0123457", is_sha=True)
+    assert not ja.code_matches(sha, sha + "0", is_sha=True), "比期望更长不该通过"
+
+    for text in (
+        "https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr",
+        "http://www.github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git",
+        "github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/",
+        "ZomebieMask/astrbot_plugin_zm_qqgroupmgr",
+    ):
+        assert ja.parse_repo(text) == "ZomebieMask/astrbot_plugin_zm_qqgroupmgr", text
+    for bad in ("", "随便一句话", "https://gitee.com/a/b", "https://github.com/onlyowner"):
+        assert ja.parse_repo(bad) is None, bad
+
+    assert ja.version_tuple("v1.0.6") > ja.version_tuple("1.0.5")
+    assert ja.version_tuple("1.0.10") > ja.version_tuple("1.0.9")
+    assert ja.version_tuple("1.0.6") == ja.version_tuple("1.0.6")
+    assert ja.version_tuple("1.1.0-beta") > ja.version_tuple("1.0.99")
+    print("  进群审批: 验证码 / sha 前缀 / 仓库解析 / 版本比较 OK")
+
+
+def test_long_mute():
+    """超过 30 天的禁言要分段下发并按时续期。"""
+    import asyncio
+    import time
+
+    mutes = sys.modules["zmplugin.core.mutes"]
+    chunk = mutes.MUTE_CHUNK
+
+    assert mutes.chunk_duration(0) == 0, "永久禁言仍传 0"
+    assert mutes.chunk_duration(600) == 600
+    assert mutes.chunk_duration(3650 * 86400) == chunk, "9999 天必须切到 30 天"
+
+    class FakeStore:
+        def __init__(self):
+            self.data = {}
+            self.saved = 0
+
+        def group(self, gid):
+            return self.data.setdefault(gid, {})
+
+        def items(self):
+            return self.data.items()
+
+        async def save(self):
+            self.saved += 1
+
+    store = FakeStore()
+    tracker = mutes.MuteTracker(store)
+    now = int(time.time())
+
+    asyncio.run(tracker.record("111", "222", 100 * 86400))
+    asyncio.run(tracker.record("111", "333", 600))
+    item = store.data["111"]["mutes"]["222"]
+    assert item["expire"] == now + 100 * 86400
+    assert item["renew_at"] == now + chunk - mutes.RENEW_LEAD
+    assert "renew_at" not in store.data["111"]["mutes"]["333"], "短禁言不需要续期"
+
+    assert tracker.due_for_renew(now) == [], "还没到续期时间"
+    due = tracker.due_for_renew(item["renew_at"])
+    assert [d["user_id"] for d in due] == ["222"], due
+    assert due[0]["remaining"] > chunk
+
+    # 续期后重新按“当下 + 一段”排下一次，且立刻不再是待续状态
+    asyncio.run(tracker.mark_renewed("111", "222"))
+    assert store.data["111"]["mutes"]["222"]["renew_at"] >= now + chunk - mutes.RENEW_LEAD
+    assert tracker.due_for_renew(now) == []
+
+    # 续期连续失败到上限就丢弃记录，别每分钟重试到十年后
+    asyncio.run(tracker.record("111", "444", 100 * 86400))
+    assert asyncio.run(tracker.mark_renew_failed("111", "444")) is False
+    assert store.data["111"]["mutes"]["444"]["renew_fails"] == 1
+    assert asyncio.run(tracker.mark_renew_failed("111", "444")) is False
+    assert asyncio.run(tracker.mark_renew_failed("111", "444")) is True
+    assert "444" not in store.data["111"]["mutes"]
+    assert asyncio.run(tracker.mark_renew_failed("111", "444")) is True, "记录没了也不该炸"
+
+    # 到期的记录不再续期；剩余不足一段时不再挂 renew_at
+    store.data["111"]["mutes"]["222"]["expire"] = now - 1
+    assert tracker.due_for_renew(now) == []
+    store.data["111"]["mutes"]["222"]["expire"] = now + 100
+    asyncio.run(tracker.mark_renewed("111", "222"))
+    assert "renew_at" not in store.data["111"]["mutes"]["222"]
+    print("  长禁言: 分段下发 / 续期时间 / 到期停续 OK")
+
+
 if __name__ == "__main__":
     _stub_astrbot()
     main = _load_plugin()
     test_help_menu(main)
     test_entry_path(main)
     test_data_dir_migration()
+    test_join_approval()
+    test_long_mute()
     print(f"全部自检通过 —— {main.PLUGIN_NAME} v{main.PLUGIN_VERSION}")

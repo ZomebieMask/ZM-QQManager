@@ -48,6 +48,43 @@ def get_data_dir() -> Path:
     return path
 
 
+def backup_on_upgrade(version: str) -> Optional[str]:
+    """版本号变化时把当前数据快照到 ``backups/<旧版本>/``。
+
+    数据本来就存在 ``data/plugin_data/`` 下，覆盖安装插件不会碰它；这份快照
+    只是为了防「新版本写坏了老数据」——真出事时把目录拷回来即可。
+    """
+    import shutil
+    import time
+
+    root = get_data_dir()
+    marker = root / "VERSION"
+    try:
+        previous = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    except OSError:
+        previous = ""
+
+    if previous == version:
+        return None
+
+    made = None
+    if previous:
+        target = root / "backups" / f"{previous}-{time.strftime('%Y%m%d%H%M%S')}"
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for item in root.glob("*.json"):
+                shutil.copy2(item, target / item.name)
+            made = str(target)
+        except OSError as exc:
+            logger.warning(f"[ZM-QQGroupmgr] 升级前备份失败: {exc}")
+
+    try:
+        marker.write_text(version, encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"[ZM-QQGroupmgr] 写入版本标记失败: {exc}")
+    return made
+
+
 class JsonStore:
     """一个 JSON 文件对应一类数据，写入走临时文件 + 原子替换。"""
 

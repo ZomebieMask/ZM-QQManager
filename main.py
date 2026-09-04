@@ -25,7 +25,21 @@ from .core.media import (
     save_named_image,
     to_base64_uri,
 )
-from .core.mutes import MuteTracker
+from .core.joinapproval import (
+    CODE_SHA,
+    CODE_TYPE_LABELS,
+    CODE_TYPES,
+    MAX_POLL_MINUTES,
+    MAX_VERIFY_MINUTES,
+    VALID_DIGITS,
+    ShaCache,
+    code_matches,
+    latest_release_tag,
+    make_code,
+    parse_repo,
+    version_tuple,
+)
+from .core.mutes import MuteTracker, chunk_duration
 from .core.onebot import OneBotApi, forward_node, resolve_member_name
 from .core.pending import PendingRegistry, session_key
 from .core.sensitive import (
@@ -37,9 +51,16 @@ from .core.sensitive import (
     SensitiveWordEngine,
 )
 from .core.server import DownloadServer
-from .core.store import GroupToggle, JsonStore, coerce_int, get_data_dir
+from .core.store import (
+    GroupToggle,
+    JsonStore,
+    backup_on_upgrade,
+    coerce_int,
+    get_data_dir,
+)
 from .core.utils import (
     MAX_DURATION,
+    MUTE_CHUNK,
     escape_cq,
     extract_targets,
     format_duration,
@@ -52,7 +73,14 @@ from .core.utils import (
 )
 
 PLUGIN_NAME = "ZM-QQGroupmgr"
-PLUGIN_VERSION = "1.0.5"
+PLUGIN_VERSION = "1.0.6"
+
+# 版本检查与更新提示指向的仓库
+PLUGIN_REPO = "ZomebieMask/astrbot_plugin_zm_qqgroupmgr"
+PLUGIN_MARKET_URL = (
+    "https://cloud.astrbot.app/plugin/ZomebieMask/astrbot_plugin_zm_qqgroupmgr"
+)
+UPDATE_CARD_TITLE = "ZM_QQGroupmgr New-Update-Available!!!"
 
 ADMIN_ONLY = "此命令仅群聊可用"
 QQ_ONLY = "此功能仅支持 QQ (aiocqhttp) 平台"
@@ -133,6 +161,42 @@ FAREWELL_USAGE = (
 
 DEFAULT_FAREWELL = "{name}（{user_id}）{reason}，本群还剩下我们这些人。"
 
+JOIN_APPROVAL_USAGE = (
+    "进群审批（/join_approval 可简写为 /ja）\n"
+    "/ja set verification_code <number|letter|mix|sha>\n"
+    "    入群后二次验证：机器人发验证码，成员限时回发，超时踢出\n"
+    "    number 数字 / letter 6 位字母 / mix 数字+字母 / sha GitHub 最新 commit\n"
+    "    缩写: /ja set vc number\n"
+    "/ja set static <内容>    把 <内容> 设为本群「回答正确问题」的答案\n"
+    "/ja set dynamic          把 GitHub 最新 commit 的 sha 设为答案，定时刷新\n"
+    "/ja off                  关闭本群进群审批\n"
+    "/ja status               查看当前设置\n"
+    "static / dynamic 需要本群加群方式为「需要正确回答问题」，"
+    "不是的话机器人会先问你要不要改"
+)
+
+# /ja set verification_code 的缩写
+JOIN_CODE_KEYWORDS = {"verification_code", "vc", "code", "验证码"}
+
+# 加群方式：4 = 需要正确回答问题（答对即入群）
+ADD_OPTION_ANSWER = 4
+
+DEFAULT_JOIN_QUESTION = "请输入管理员提供的验证内容"
+DEFAULT_JOIN_DECLINE_TIP = "收到 :)"
+DEFAULT_JOIN_VERIFY_TIP = (
+    "{at} 欢迎加入！请在 {minutes} 分钟内发送验证码完成验证，否则将被移出本群\n"
+    "验证码: {code}"
+)
+DEFAULT_JOIN_SHA_TIP = (
+    "{at} 欢迎加入！请在 {minutes} 分钟内发送 {repo} 最新 commit 的 sha 值"
+    "（前 7 位即可）完成验证，否则将被移出本群"
+)
+DEFAULT_JOIN_PASS_TIP = "{at} 验证通过，欢迎 :)"
+DEFAULT_JOIN_TIMEOUT_TIP = "{name}（{user_id}）未在 {minutes} 分钟内完成验证，已移出本群"
+DEFAULT_UPDATE_TIP = (
+    "zm_qqgroupmgr插件有新的版本可更新!\n" + PLUGIN_MARKET_URL
+)
+
 YES_WORDS = {"是", "yes", "y", "要", "需要", "有", "1", "true", "好", "嗯"}
 NO_WORDS = {"否", "no", "n", "不", "不要", "不需要", "没有", "0", "false", "算了"}
 
@@ -205,8 +269,17 @@ class ZMQQGroupmgr(Star):
         # 持有后台任务引用，否则可能被 GC 掉导致定时解除全体禁言失效
         self._tasks: set = set()
 
+        self._sha_cache = ShaCache()
+        # 待验证的新成员：(群号, QQ号) -> {code, is_sha, deadline}
+        # 只放内存：重载后没人还记得当初发的验证码，留着也没意义
+        self._pending_verify: dict = {}
+
     async def initialize(self):
         """插件加载后启动文件下载服务。"""
+        made = backup_on_upgrade(PLUGIN_VERSION)
+        if made:
+            logger.info(f"[ZM-QQGroupmgr] 升级前数据已备份到 {made}")
+
         if self.config.get("file_server_enabled", True):
             # 强制使用 0.0.0.0 以避免云服务器绑定问题
             configured_host = str(self.config.get("file_host") or "0.0.0.0")
@@ -236,6 +309,7 @@ class ZMQQGroupmgr(Star):
                     "请在插件配置 file_base_url 填写实际可访问的地址（如 http://公网IP:%s）"
                     % (port, port)
                 )
+        self._spawn(self._ticker())
         logger.info(f"[{PLUGIN_NAME}] 插件已加载 v{PLUGIN_VERSION}")
 
     def _spawn(self, coro) -> None:
@@ -341,7 +415,7 @@ class ZMQQGroupmgr(Star):
             await api.try_call("delete_msg", message_id=event.message_obj.message_id)
         if duration > 0:
             try:
-                await api.mute(int(group_id), int(user_id), duration)
+                await api.mute(int(group_id), int(user_id), chunk_duration(duration))
                 await self.mutes.record(group_id, user_id, duration, reason, "自动检测")
             except RuntimeError as exc:
                 logger.warning(f"[ZM-QQGroupmgr] 自动禁言失败: {exc}")
@@ -472,13 +546,219 @@ class ZMQQGroupmgr(Star):
         return [], "私聊使用时必须显式指定群号，例: /g pp 12345678"
 
     # ------------------------------------------------------------------
+    # 后台定时任务：长禁言续期 / 动态答案刷新 / 新版本检查
+    # ------------------------------------------------------------------
+
+    def _client(self):
+        """取 aiocqhttp 适配器的 client。后台任务手里没有 event，只能这样拿。"""
+        try:
+            for platform in self.context.platform_manager.platform_insts:
+                if platform.meta().name == "aiocqhttp":
+                    return platform.get_client()
+        except Exception as exc:
+            logger.debug(f"[ZM-QQGroupmgr] 获取 aiocqhttp client 失败: {exc}")
+        return None
+
+    def _bg_api(self) -> Optional[OneBotApi]:
+        client = self._client()
+        return OneBotApi(client=client) if client is not None else None
+
+    def _meta(self) -> dict:
+        """settings.json 里的全局小状态（上次检查时间等）。
+
+        其余顶层键都是群号，这里刻意用一个不可能与群号重合的名字。
+        """
+        bucket = self.settings.get("__meta__")
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self.settings.set("__meta__", bucket)
+        return bucket
+
+    def _poll_minutes(self) -> int:
+        """GitHub sha 的查询间隔（分钟）。"""
+        value = coerce_int(self.config.get("join_sha_poll_minutes"), 5)
+        return max(1, min(value, MAX_POLL_MINUTES))
+
+    async def _ticker(self) -> None:
+        """一个循环干三件事，省掉三套定时器。
+
+        ponytail: 60 秒粒度的轮询，够用；要秒级精度再改成每条记录一个定时器。
+        """
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await self._renew_long_mutes()
+                await self._refresh_dynamic_answers()
+                await self._check_update()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # 单次异常不能让整个循环停掉
+                logger.warning(f"[ZM-QQGroupmgr] 后台任务异常: {exc}")
+
+    async def _renew_long_mutes(self) -> None:
+        """超过 30 天的禁言到点续期。"""
+        due = self.mutes.due_for_renew()
+        if not due:
+            return
+        api = self._bg_api()
+        if api is None:
+            return
+        for item in due:
+            try:
+                await api.mute(
+                    int(item["group_id"]),
+                    int(item["user_id"]),
+                    chunk_duration(item["remaining"]),
+                )
+            except (RuntimeError, ValueError) as exc:
+                gave_up = await self.mutes.mark_renew_failed(
+                    item["group_id"], item["user_id"]
+                )
+                logger.warning(
+                    f"[ZM-QQGroupmgr] 续期禁言 {item['user_id']}@{item['group_id']} 失败: {exc}"
+                    + ("，已放弃这条记录（成员可能已退群）" if gave_up else "，5 分钟后重试")
+                )
+                continue
+            await self.mutes.mark_renewed(item["group_id"], item["user_id"])
+            logger.info(
+                f"[ZM-QQGroupmgr] 已为 {item['user_id']}@{item['group_id']} 续期禁言，"
+                f"剩余 {format_duration(item['remaining'])}"
+            )
+
+    async def _refresh_dynamic_answers(self) -> None:
+        """把开了 /ja set dynamic 的群的加群答案换成最新 sha。"""
+        interval = self._poll_minutes() * 60
+        meta = self._meta()
+        now = int(time.time())
+        if now - int(meta.get("sha_checked_at") or 0) < interval:
+            return
+        meta["sha_checked_at"] = now
+        await self.settings.save()
+
+        targets = [
+            (group_id, bucket["join_approval"])
+            for group_id, bucket in self.settings.items()
+            if isinstance(bucket, dict)
+            and isinstance(bucket.get("join_approval"), dict)
+            and bucket["join_approval"].get("mode") == "dynamic"
+        ]
+        if not targets:
+            return
+
+        api = self._bg_api()
+        if api is None:
+            return
+        for group_id, state in targets:
+            repo = state.get("repo") or ""
+            if not repo:
+                continue
+            sha, error = await self._sha_cache.latest(repo, ttl=interval, force=True)
+            if not sha:
+                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 刷新 sha 失败: {error}")
+                continue
+            if sha == state.get("answer"):
+                continue
+            ok, why = await api.set_group_add_option(
+                int(group_id),
+                ADD_OPTION_ANSWER,
+                state.get("question") or DEFAULT_JOIN_QUESTION,
+                sha,
+            )
+            if not ok:
+                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 更新加群答案失败: {why}")
+                continue
+            state["answer"] = sha
+            await self.settings.save()
+            logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 加群答案已更新为 {sha[:7]}")
+
+    async def _check_update(self) -> None:
+        """按配置的天数查一次最新 release，有新版本就在开了 /update on 的群里说一声。"""
+        days = max(1, min(coerce_int(self.config.get("update_check_days"), 5), 30))
+        meta = self._meta()
+        now = int(time.time())
+        if now - int(meta.get("update_checked_at") or 0) < days * 86400:
+            return
+        meta["update_checked_at"] = now
+        await self.settings.save()
+
+        latest, error = await latest_release_tag(PLUGIN_REPO)
+        if not latest:
+            logger.debug(f"[ZM-QQGroupmgr] 版本检查失败: {error}")
+            return
+        if version_tuple(latest) <= version_tuple(PLUGIN_VERSION):
+            return
+        # 同一个新版本只提示一次，别每 5 天刷一遍
+        if meta.get("update_notified") == latest:
+            return
+
+        api = self._bg_api()
+        if api is None:
+            return
+        groups = [str(item.get("group_id")) for item in await api.group_list()]
+        text = str(self.config.get("update_tip") or DEFAULT_UPDATE_TIP).replace(
+            "{version}", latest
+        )
+        login = await api.try_call("get_login_info") or {}
+        bot_id = str(login.get("user_id") or "10000")
+        sent = 0
+        for group_id in groups:
+            if not group_id or not self._update_notify_enabled(group_id):
+                continue
+            result = await api.send_forward(
+                int(group_id),
+                [forward_node(bot_id, UPDATE_CARD_TITLE, text)],
+                source=UPDATE_CARD_TITLE,
+                news=[{"text": f"v{latest} 已发布"}],
+                summary="查看 1 条转发消息",
+                prompt=f"[{UPDATE_CARD_TITLE}]",
+            )
+            if result is None:
+                await api.send_group_msg(int(group_id), text)
+            sent += 1
+            await asyncio.sleep(BATCH_INTERVAL)
+
+        meta["update_notified"] = latest
+        await self.settings.save()
+        logger.info(f"[ZM-QQGroupmgr] 发现新版本 v{latest}，已在 {sent} 个群提示")
+
+    def _update_notify_enabled(self, group_id: str) -> bool:
+        """/update 开关，默认开启。"""
+        value = self.settings.group(str(group_id)).get("update_notify")
+        return True if value is None else bool(value)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("update")
+    async def cmd_update(self, event: AstrMessageEvent):
+        """/update on|off - 本群是否接收插件更新提示"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        args = self._args(event, "update")
+        action = args[0].lower() if args else ""
+        if action not in {"on", "off"}:
+            state = "开启" if self._update_notify_enabled(group_id) else "关闭"
+            days = max(1, min(coerce_int(self.config.get("update_check_days"), 5), 30))
+            yield event.plain_result(
+                f"用法: /update on|off\n当前状态: {state}（每 {days} 天检查一次新版本）"
+            )
+            return
+
+        self.settings.group(group_id)["update_notify"] = action == "on"
+        await self.settings.save()
+        yield event.plain_result(
+            "已开启更新通知，有新版本时会在本群提示" if action == "on" else "已关闭本群的更新通知"
+        )
+
+    # ------------------------------------------------------------------
     # 禁言相关命令
     # ------------------------------------------------------------------
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("mute")
+    @filter.command("mute", alias={"m"})
     async def cmd_mute(self, event: AstrMessageEvent):
-        """/mute <成员> [时长] - 禁言成员，默认 10 分钟"""
+        """/mute <成员> [时长] - 禁言成员，默认 10 分钟（缩写 /m）"""
         group_id = self._require_group(event)
         if not group_id:
             yield event.plain_result(ADMIN_ONLY)
@@ -489,14 +769,15 @@ class ZMQQGroupmgr(Star):
             yield event.plain_result(QQ_ONLY)
             return
 
-        raw = self._raw_after(event, "mute")
+        raw = self._raw_after(event, "mute", "m")
         targets = extract_targets(event, raw)
         if not targets:
-            yield event.plain_result("用法: /mute <成员> [时长]\n例: /mute @某人 10m、/mute 12345 1h")
+            yield event.plain_result("用法: /mute <成员> [时长]\n例: /mute @某人 10m、/m 12345 1h")
             return
 
         # 时长取最后一段不含目标 QQ 号的参数
         duration = 600
+        capped = 0
         parts = [p for p in raw.split() if p.strip()]
         for part in reversed(parts):
             if any(t in part for t in targets):
@@ -504,12 +785,15 @@ class ZMQQGroupmgr(Star):
             parsed = parse_duration(part, default_unit="m")
             if parsed is not None:
                 duration = min(parsed, MAX_DURATION)
+                if parsed > MAX_DURATION:
+                    capped = parsed
                 break
 
         succeeded, failed = [], []
         for user_id in targets:
             try:
-                await api.mute(int(group_id), int(user_id), duration)
+                # QQ 只接受 30 天以内的禁言，更长的先禁 30 天，由后台定时续期
+                await api.mute(int(group_id), int(user_id), chunk_duration(duration))
                 await self.mutes.record(
                     group_id, user_id, duration, "管理员手动禁言", str(event.get_sender_id())
                 )
@@ -518,17 +802,26 @@ class ZMQQGroupmgr(Star):
                 failed.append(f"{user_id}({exc})")
 
         lines = []
+        if capped:
+            lines.append(
+                f"{format_duration(capped)} 超过上限，已按 {format_duration(MAX_DURATION)} 处理"
+            )
         if succeeded:
             label = "解除禁言" if duration == 0 else f"禁言 {format_duration(duration)}"
             lines.append(f"已对 {len(succeeded)} 名成员{label}: {', '.join(succeeded)}")
+            if duration > MUTE_CHUNK:
+                lines.append(
+                    f"QQ 单次最多禁言 {format_duration(MUTE_CHUNK)}，"
+                    "机器人会自动续期到时长走完（期间请保持插件运行）"
+                )
         if failed:
             lines.append(f"失败: {', '.join(failed)}")
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("unmute")
+    @filter.command("unmute", alias={"um"})
     async def cmd_unmute(self, event: AstrMessageEvent):
-        """/unmute <成员> - 解除禁言"""
+        """/unmute <成员> - 解除禁言（缩写 /um）"""
         group_id = self._require_group(event)
         if not group_id:
             yield event.plain_result(ADMIN_ONLY)
@@ -539,9 +832,9 @@ class ZMQQGroupmgr(Star):
             yield event.plain_result(QQ_ONLY)
             return
 
-        targets = extract_targets(event, self._raw_after(event, "unmute"))
+        targets = extract_targets(event, self._raw_after(event, "unmute", "um"))
         if not targets:
-            yield event.plain_result("用法: /unmute <成员>")
+            yield event.plain_result("用法: /unmute <成员>（缩写 /um）")
             return
 
         succeeded, failed = [], []
@@ -666,6 +959,386 @@ class ZMQQGroupmgr(Star):
         state.pop("muteall_until", None)
         await self.settings.save()
         await api.send_group_msg(int(group_id), "全体禁言已到期，自动解除")
+
+    # ------------------------------------------------------------------
+    # 进群审批
+    # ------------------------------------------------------------------
+
+    def _join_state(self, group_id: str) -> dict:
+        state = self.settings.group(str(group_id)).get("join_approval")
+        return state if isinstance(state, dict) else {}
+
+    def _verify_minutes(self) -> int:
+        """新成员必须在多少分钟内发出验证码。"""
+        value = coerce_int(self.config.get("join_verify_minutes"), 1)
+        return max(1, min(value, MAX_VERIFY_MINUTES))
+
+    def _code_digits(self) -> int:
+        value = coerce_int(self.config.get("join_code_digits"), 6)
+        return value if value in VALID_DIGITS else 6
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("join_approval", alias={"ja"})
+    async def cmd_join_approval(self, event: AstrMessageEvent):
+        """/join_approval - 进群审批（缩写 /ja）"""
+        group_id = self._require_group(event)
+        if not group_id:
+            yield event.plain_result(ADMIN_ONLY)
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            yield event.plain_result(QQ_ONLY)
+            return
+
+        raw = self._raw_after(event, "join_approval", "ja")
+        args = raw.split()
+        action = args[0].lower() if args else ""
+
+        if action in {"off", "关闭", "disable"}:
+            self.settings.group(group_id)["join_approval"] = {"mode": ""}
+            await self.settings.save()
+            yield event.plain_result(
+                "已关闭本群进群审批（QQ 侧的加群方式不会自动改回，需要的话请手动调整）"
+            )
+            return
+
+        if action in {"status", "状态"} or not action:
+            yield event.plain_result(self._join_status_text(group_id))
+            return
+
+        if action != "set" or len(args) < 2:
+            yield event.plain_result(JOIN_APPROVAL_USAGE)
+            return
+
+        sub = args[1].lower()
+
+        if sub in JOIN_CODE_KEYWORDS:
+            code_type = args[2].lower() if len(args) > 2 else ""
+            if code_type not in CODE_TYPES:
+                yield event.plain_result(
+                    "验证码类型只能是 number / letter / mix / sha\n"
+                    "例: /ja set vc mix"
+                )
+                return
+            if code_type == CODE_SHA:
+                timeout = self._arm_pending(
+                    event, "设置进群验证码", kind="ja_repo", group_id=group_id, target="code"
+                )
+                yield event.plain_result(
+                    f"请在 {format_duration(timeout)}内发送 GitHub 仓库链接"
+                    "（例: https://github.com/owner/repo）"
+                )
+                return
+
+            state = {
+                "mode": "code",
+                "code_type": code_type,
+                "repo": "",
+            }
+            self.settings.group(group_id)["join_approval"] = state
+            await self.settings.save()
+            yield event.plain_result(
+                f"指令执行成功 已启用进群验证码（{CODE_TYPE_LABELS[code_type]}）\n"
+                f"新成员需在 {self._verify_minutes()} 分钟内回发验证码，超时自动踢出"
+            )
+            return
+
+        if sub == "static":
+            content = raw.split(None, 2)[2].strip() if len(args) > 2 else ""
+            if not content:
+                yield event.plain_result("用法: /ja set static <内容>\n例: /ja set static 你好")
+                return
+            yield event.plain_result(
+                await self._apply_join_answer(event, api, group_id, "static", content, "")
+            )
+            return
+
+        if sub == "dynamic":
+            timeout = self._arm_pending(
+                event, "设置动态加群答案", kind="ja_repo", group_id=group_id, target="dynamic"
+            )
+            yield event.plain_result(
+                f"请在 {format_duration(timeout)}内发送 GitHub 仓库链接"
+                "（例: https://github.com/owner/repo）"
+            )
+            return
+
+        yield event.plain_result(JOIN_APPROVAL_USAGE)
+
+    def _join_status_text(self, group_id: str) -> str:
+        state = self._join_state(group_id)
+        mode = state.get("mode") or ""
+        if not mode:
+            return "本群未启用进群审批\n" + JOIN_APPROVAL_USAGE
+        if mode == "code":
+            code_type = state.get("code_type") or ""
+            lines = [
+                f"进群审批: 入群验证码（{CODE_TYPE_LABELS.get(code_type, code_type)}）",
+                f"限时: {self._verify_minutes()} 分钟，超时踢出",
+            ]
+            if code_type == CODE_SHA:
+                lines.append(f"仓库: {state.get('repo') or '未设置'}")
+                lines.append(f"查询间隔: {self._poll_minutes()} 分钟")
+            else:
+                lines.append(f"验证码位数: {self._code_digits()}（letter 固定 6 位字母）")
+            return "\n".join(lines)
+        if mode == "static":
+            return (
+                "进群审批: 回答正确问题（固定答案）\n"
+                f"问题: {state.get('question') or ''}\n"
+                f"答案: {state.get('answer') or ''}"
+            )
+        return (
+            "进群审批: 回答正确问题（动态 sha）\n"
+            f"仓库: {state.get('repo') or '未设置'}\n"
+            f"当前 sha: {state.get('answer') or '未取到'}\n"
+            f"刷新间隔: {self._poll_minutes()} 分钟"
+        )
+
+    async def _apply_join_answer(
+        self,
+        event: AstrMessageEvent,
+        api: OneBotApi,
+        group_id: str,
+        mode: str,
+        answer: str,
+        repo: str,
+    ) -> str:
+        """设置「需要正确回答问题」的答案，加群方式不对时先问管理员。"""
+        option = await api.group_add_option(int(group_id))
+        if option == ADD_OPTION_ANSWER:
+            return await self._commit_join_answer(api, group_id, mode, answer, repo)
+
+        timeout = self._arm_pending(
+            event, "设置加群方式", kind="ja_confirm",
+            group_id=group_id, mode=mode, answer=answer, repo=repo,
+        )
+        current = "查不到当前加群方式" if option is None else f"当前加群方式代码 {option}"
+        return (
+            f"本群的加群方式不是「需要正确回答问题」（{current}）。\n"
+            f"是否现在改为该方式？请在 {format_duration(timeout)}内回复 是 / 否"
+        )
+
+    async def _commit_join_answer(
+        self, api: OneBotApi, group_id: str, mode: str, answer: str, repo: str
+    ) -> str:
+        question = str(self.config.get("join_question_text") or DEFAULT_JOIN_QUESTION)
+        ok, why = await api.set_group_add_option(
+            int(group_id), ADD_OPTION_ANSWER, question, answer
+        )
+        if not ok:
+            return (
+                f"设置加群方式失败: {why}\n"
+                "该接口是 NapCat 扩展，且机器人需为本群群主或管理员"
+            )
+
+        self.settings.group(group_id)["join_approval"] = {
+            "mode": mode,
+            "question": question,
+            "answer": answer,
+            "repo": repo,
+        }
+        await self.settings.save()
+
+        if mode == "dynamic":
+            return f"已将群正确密码更换为动态值 当前sha值为 {answer}"
+        return (
+            "指令执行成功 本群加群方式已设为「需要正确回答问题」\n"
+            f"问题: {question}\n答案: {answer}"
+        )
+
+    async def _handle_ja_repo(self, event: AstrMessageEvent, key: str, pending: dict):
+        """收下管理员补发的 GitHub 仓库链接。"""
+        text = (event.message_str or "").strip()
+        if not text or self._looks_like_command(event):
+            return
+
+        self._pending_media.drop(key)
+        repo = parse_repo(text)
+        if not repo:
+            await event.send(
+                event.plain_result("无法识别的 GitHub 仓库链接，指令已结束，请重新执行")
+            )
+            event.stop_event()
+            return
+
+        api = OneBotApi(event)
+        group_id = str(pending.get("group_id") or "")
+        sha, error = await self._sha_cache.latest(repo, force=True)
+        if not sha:
+            await event.send(event.plain_result(f"获取最新 commit 失败: {error}"))
+            event.stop_event()
+            return
+
+        if pending.get("target") == "code":
+            self.settings.group(group_id)["join_approval"] = {
+                "mode": "code",
+                "code_type": CODE_SHA,
+                "repo": repo,
+            }
+            await self.settings.save()
+            await event.send(
+                event.plain_result(
+                    f"指令执行成功 目前sha值为 {sha}\n"
+                    f"新成员需在 {self._verify_minutes()} 分钟内发送该 sha（前 7 位即可），"
+                    f"每 {self._poll_minutes()} 分钟刷新一次"
+                )
+            )
+        else:
+            await event.send(
+                event.plain_result(
+                    await self._apply_join_answer(event, api, group_id, "dynamic", sha, repo)
+                )
+            )
+        event.stop_event()
+
+    async def _handle_ja_confirm(self, event: AstrMessageEvent, key: str, pending: dict):
+        """处理「要不要把加群方式改成需要正确回答问题」的答复。"""
+        answer = (event.message_str or "").strip().lower()
+        if not answer or (answer not in YES_WORDS and answer not in NO_WORDS):
+            return
+
+        self._pending_media.drop(key)
+        if answer in NO_WORDS:
+            tip = str(self.config.get("join_decline_tip") or DEFAULT_JOIN_DECLINE_TIP)
+            await event.send(event.plain_result(tip))
+            event.stop_event()
+            return
+
+        api = OneBotApi(event)
+        if not api.available:
+            await event.send(event.plain_result(QQ_ONLY))
+        else:
+            await event.send(
+                event.plain_result(
+                    await self._commit_join_answer(
+                        api,
+                        str(pending.get("group_id") or ""),
+                        str(pending.get("mode") or "static"),
+                        str(pending.get("answer") or ""),
+                        str(pending.get("repo") or ""),
+                    )
+                )
+            )
+        event.stop_event()
+
+    async def _start_verify(self, api: OneBotApi, group_id: str, user_id: str) -> None:
+        """新成员进群后发出验证码并挂上超时踢出。"""
+        state = self._join_state(group_id)
+        if state.get("mode") != "code":
+            return
+
+        code_type = str(state.get("code_type") or "")
+        if code_type not in CODE_TYPES:
+            return
+
+        minutes = self._verify_minutes()
+        if code_type == CODE_SHA:
+            repo = str(state.get("repo") or "")
+            code, error = await self._sha_cache.latest(repo, ttl=self._poll_minutes() * 60)
+            if not code:
+                # 查不到 sha 就没有正确答案，这时候踢人纯属误伤
+                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 取 sha 失败，跳过验证: {error}")
+                return
+            template = str(self.config.get("join_sha_tip") or DEFAULT_JOIN_SHA_TIP)
+            message = render_cq(
+                template,
+                {
+                    "at": f"[CQ:at,qq={user_id}]",
+                    "minutes": str(minutes),
+                    "repo": escape_cq(repo),
+                    "user_id": str(user_id),
+                    "group_id": str(group_id),
+                },
+            )
+        else:
+            code = make_code(code_type, self._code_digits())
+            template = str(self.config.get("join_verify_tip") or DEFAULT_JOIN_VERIFY_TIP)
+            message = render_cq(
+                template,
+                {
+                    "at": f"[CQ:at,qq={user_id}]",
+                    "minutes": str(minutes),
+                    "code": code,
+                    "user_id": str(user_id),
+                    "group_id": str(group_id),
+                },
+            )
+
+        self._prune_verify()
+        self._pending_verify[(str(group_id), str(user_id))] = {
+            "code": code,
+            "is_sha": code_type == CODE_SHA,
+            "deadline": time.time() + minutes * 60,
+        }
+        await api.send_group_msg(int(group_id), message)
+        self._spawn(self._verify_timeout(api, group_id, user_id, minutes))
+
+    def _prune_verify(self) -> None:
+        now = time.time()
+        for key in [k for k, v in self._pending_verify.items() if v["deadline"] <= now]:
+            self._pending_verify.pop(key, None)
+
+    async def _verify_timeout(
+        self, api: OneBotApi, group_id: str, user_id: str, minutes: int
+    ) -> None:
+        """限时内没验证就踢出。"""
+        try:
+            await asyncio.sleep(minutes * 60)
+        except asyncio.CancelledError:
+            return
+
+        key = (str(group_id), str(user_id))
+        item = self._pending_verify.get(key)
+        if item is None:
+            return
+        # 期间退群又进群的话，登记已经被换成更晚的那次，踢人交给新的定时任务
+        if item["deadline"] > time.time() + 1:
+            return
+        self._pending_verify.pop(key, None)
+
+        name = await api.stranger_name(user_id)
+        try:
+            await api.kick(int(group_id), int(user_id))
+        except RuntimeError as exc:
+            logger.warning(f"[ZM-QQGroupmgr] 验证超时踢出 {user_id} 失败: {exc}")
+            return
+
+        template = str(self.config.get("join_timeout_tip") or DEFAULT_JOIN_TIMEOUT_TIP)
+        await api.send_group_msg(
+            int(group_id),
+            render_cq(
+                template,
+                {
+                    "at": escape_cq(name),
+                    "name": escape_cq(name),
+                    "user_id": str(user_id),
+                    "group_id": str(group_id),
+                    "minutes": str(minutes),
+                },
+            ),
+        )
+        logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 验证超时，已踢出")
+
+    async def _check_verify(self, event, api, group_id, user_id, text) -> bool:
+        """待验证成员发言时比对验证码，返回是否已处理这条消息。"""
+        key = (str(group_id), str(user_id))
+        pending = self._pending_verify.get(key)
+        if not pending:
+            return False
+        if time.time() > pending["deadline"]:
+            self._pending_verify.pop(key, None)
+            return False
+        if not code_matches(pending["code"], text, pending.get("is_sha", False)):
+            return False
+
+        self._pending_verify.pop(key, None)
+        tip = str(self.config.get("join_pass_tip") or DEFAULT_JOIN_PASS_TIP)
+        await api.send_group_msg(int(group_id), self._render(tip, event))
+        logger.info(f"[ZM-QQGroupmgr] 群 {group_id} 成员 {user_id} 验证通过")
+        event.stop_event()
+        return True
 
     # ------------------------------------------------------------------
     # 敏感词系统
@@ -1478,6 +2151,10 @@ class ZMQQGroupmgr(Star):
         text = event.message_str or ""
         self._record_message(event)
 
+        # 入群验证优先于其他检测：验证码本身可能长得像刷屏或广告
+        if await self._check_verify(event, api, group_id, user_id, text):
+            return
+
         # 管理员自己不受自动检测约束
         if event.is_admin():
             return
@@ -1644,7 +2321,7 @@ class ZMQQGroupmgr(Star):
         elif action == "mute":
             duration = coerce_int(self.config.get("card_mute_duration"), 600)
             try:
-                await api.mute(int(group_id), int(user_id), duration)
+                await api.mute(int(group_id), int(user_id), chunk_duration(duration))
                 await self.mutes.record(group_id, user_id, duration, f"名片违规: {reason}", "自动检测")
                 message += f"\n已禁言 {format_duration(duration)}"
             except RuntimeError as exc:
@@ -2672,8 +3349,15 @@ class ZMQQGroupmgr(Star):
         if not pending:
             return
 
-        if pending.get("kind") == "notice_ask":
+        kind_now = pending.get("kind")
+        if kind_now == "notice_ask":
             await self._handle_notice_answer(event, key, pending)
+            return
+        if kind_now == "ja_repo":
+            await self._handle_ja_repo(event, key, pending)
+            return
+        if kind_now == "ja_confirm":
+            await self._handle_ja_confirm(event, key, pending)
             return
 
         # 等的是图片，这条消息里没有就继续等，别把中间的闲聊吃掉
@@ -2823,6 +3507,8 @@ class ZMQQGroupmgr(Star):
             event.stop_event()
             return
 
+        await self._start_verify(api, group_id, user_id)
+
         welcome = self.settings.group(group_id).get("welcome")
         if not isinstance(welcome, dict) or not welcome.get("enabled"):
             return
@@ -2946,11 +3632,18 @@ class ZMQQGroupmgr(Star):
             f"{PLUGIN_NAME} v{PLUGIN_VERSION} 命令一览\n"
             "除标注外均仅 AstrBot 管理员可用；括号内为命令缩写\n\n"
             "【禁言】\n"
-            "/mute <成员> [时长]      禁言成员，默认 10 分钟\n"
-            "/unmute <成员>          解除禁言\n"
+            "/mute <成员> [时长]      禁言成员，默认 10 分钟（缩写 /m）\n"
+            "/unmute <成员>          解除禁言（缩写 /um）\n"
             "/mutelist               查看禁言列表与剩余时长\n"
             "/muteall [时长]          全体禁言，默认永久\n"
-            "/muteall off            解除全体禁言\n\n"
+            "/muteall off            解除全体禁言\n"
+            "  单次上限 3650 天；超过 30 天的部分由机器人自动续期\n\n"
+            "【进群审批】/join_approval 缩写 /ja\n"
+            "/ja set verification_code <number|letter|mix|sha>\n"
+            "                        入群后限时回发验证码，超时踢出（缩写 /ja set vc）\n"
+            "/ja set static <内容>    把 <内容> 设为「回答正确问题」的答案\n"
+            "/ja set dynamic         用 GitHub 最新 commit 的 sha 作答案，定时刷新\n"
+            "/ja off | /ja status    关闭 / 查看当前设置\n\n"
             "【敏感词】/sensitive-words 缩写 /sw\n"
             "/sw on [时长]            开启，默认单位分钟\n"
             "/sw off                 关闭（改时长需先 off 再 on）\n"
@@ -3002,6 +3695,7 @@ class ZMQQGroupmgr(Star):
             "/merge <标题> <qq> <内容> [...]  构造合并转发，标题即卡片名（全体可用）\n"
             "/kill <成员> <理由>              赛博击杀播报\n"
             "/slimefinder <version> <seed>   史莱姆区块（缩写 /sf，全体可用）\n"
+            "/update on|off                  本群是否接收插件更新提示（默认开）\n"
             "/zmhelp                         本帮助（缩写 /群管帮助）\n\n"
             "时长单位: s 秒 / m 分钟 / h 小时 / d 天"
         )

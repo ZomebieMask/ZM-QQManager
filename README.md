@@ -1,20 +1,25 @@
 <div align="center">
 
-<img src="logo.png" width="110" alt="ZM-QQGroupmgr" />
+<img src="https://raw.githubusercontent.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/main/logo.png" width="110" alt="ZM-QQGroupmgr" />
 
 # ZM-QQGroupmgr
 
 ### 一个插件，顶十个 —— AstrBot 全能 QQ 群管理套件
 
-**26 组指令 · 10 大模块 · 从禁言踢人到敏感词、刷屏、广告、文件分发、跨群批量操作，一站装完**
+**28 组指令 · 11 大模块 · 从禁言踢人到进群审批、敏感词、刷屏、广告、文件分发、跨群批量操作，一站装完**
 
-[![version](https://img.shields.io/badge/version-1.0.5-blue?style=flat-square)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/releases)
+[![version](https://img.shields.io/badge/version-1.0.6-blue?style=flat-square)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/releases)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A53.4.0-7B68EE?style=flat-square)](https://astrbot.app)
 [![platform](https://img.shields.io/badge/platform-aiocqhttp%20%7C%20nakuru-32CD32?style=flat-square)](https://docs.astrbot.app)
-[![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/blob/main/LICENSE)
 [![stars](https://img.shields.io/github/stars/ZomebieMask/astrbot_plugin_zm_qqgroupmgr?style=flat-square&color=FFD700)](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/stargazers)
 
-[快速开始](#-快速开始) · [功能总览](#-一眼看懂它能干什么) · [为什么选它](#-为什么选-zm-qqgroupmgr) · [指令手册](#-指令手册) · [配置项](#️-配置项) · [常见问题](#-常见问题)
+<!-- 导航用完整地址：README 会被 AstrBot 插件市场等站点二次渲染，纯 #锚点在那边点不动 -->
+[快速开始](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr#-快速开始) ·
+[功能总览](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr#-一眼看懂它能干什么) ·
+[指令手册](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr#-指令手册) ·
+[配置项](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr#️-配置项) ·
+[常见问题](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr#-常见问题)
 
 </div>
 
@@ -24,12 +29,13 @@
 
 | 模块 | 能力 | 核心指令 |
 | :--- | :--- | :--- |
-| 🔨 **成员管理** | 禁言 / 解禁 / 全体禁言 / 禁言列表与剩余时长 / 踢人 / 按不活跃天数清理 / 封禁并自动拒绝加群 / 收放管理员 | `/mute` `/muteall` `/mutelist` `/kick` `/ban` `/op` |
+| 🔨 **成员管理** | 禁言（**最长 3650 天**，自动分段续期）/ 解禁 / 全体禁言 / 禁言列表与剩余时长 / 踢人 / 按不活跃天数清理 / 封禁并自动拒绝加群 / 收放管理员 | `/mute` `/muteall` `/mutelist` `/kick` `/ban` `/op` |
 | 💬 **消息管理** | 回复即撤 / 批量撤回最近 N 条 / 从协议端拉群历史（连机器人自己和插件启动前的消息也能撤） | `/recall` |
 | 🚫 **敏感词** | 命中即撤回 + 禁言，时长按群独立设置；自定义词 / 远程词库 / 混合三种词源；白名单纠偏 | `/sw` |
 | 🌊 **刷屏检测** | 滑动窗口条数 + 连续重复内容双重判定，阈值可调，按群开关 | `/antiflood` |
 | 🏷️ **名片检测** | 扫群名片里的广告与敏感内容，处理方式可选 warn / reset / mute / kick | `/cardcheck` |
 | 🛡️ **广告拦截** | 评分制多维度判定（广告短语 + 联系方式 + 手机号 + 外链 + 促销词），越过阈值自动撤回禁言 | `/adban` `/ad` |
+| 🚪 **进群审批** | 入群限时验证码（数字 / 字母 / 混合 / GitHub commit sha），超时踢出；或直接接管 QQ 的「回答正确问题」，答案可固定也可跟着仓库 commit 动态刷新 | `/ja` |
 | 📁 **文件仓库** | 上传入库 → 签发**限时下载链接** → 内置 HTTP 服务分发；带下载冷却和版本更新日志 | `/file` `/f dl` |
 | 🎫 **群资料管理** | 改群名、换群头像，**群号用 `-` 连接即可跨群批量**（单次上限 20 群），换完自动撤图 | `/g nn` `/g pp` |
 | 📢 **公告与迎送** | 发群公告（可置顶、可配图）、入群欢迎、退群提示（可带图），全部支持占位符 | `/bc` `/wel` `/bye` |
@@ -145,8 +151,8 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 
 | 指令 | 说明 |
 | :--- | :--- |
-| `/mute <成员> [时长]` | 禁言。`<成员>` 可 @ 或填 QQ 号，不填时长用后台默认值 |
-| `/unmute <成员>` | 解除禁言 |
+| `/mute <成员> [时长]`（`/m`） | 禁言。`<成员>` 可 @ 或填 QQ 号，不填时长默认 10 分钟 |
+| `/unmute <成员>`（`/um`） | 解除禁言 |
 | `/mutelist` | 本群在禁成员 + 各自剩余时长 |
 | `/muteall [时长\|off]` | 全体禁言，**不带参数默认永久**，`off` 解除 |
 | `/kick <成员>` | 踢出指定成员 |
@@ -157,10 +163,15 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 | `/title @成员 <文本>` / `/title unset @成员` | 群专属头衔（QQ 通常只允许群主操作） |
 
 ```
-/mute @张三 30d          禁言 30 天
+/m @张三 30d             禁言 30 天
+/m @张三 3650d           禁言 10 年（上限）
 /muteall 2h              全群禁言 2 小时
 /kick 1m                 清理 1 个月没发言的人
 ```
+
+> **超长禁言**：QQ 的 `set_group_ban` 单次最多 30 天，传更长的值协议端会直接报错（`retcode 1200`）。
+> 插件把 30 天以上的时长切成 30 天一段下发，并在到期前自动续期，直到总时长走完，上限 **3650 天**。
+> 续期靠插件后台任务完成，**插件长时间停用期间不会续期**；`/unmute` 会同时终止续期。
 
 </details>
 
@@ -322,6 +333,51 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 </details>
 
 <details>
+<summary><b>🚪 进群审批</b></summary>
+
+> `/join_approval` 缩写 `/ja`。三种玩法可选，按群独立。
+
+| 指令 | 说明 |
+| :--- | :--- |
+| `/ja set verification_code <number\|letter\|mix\|sha>`（`/ja set vc`） | 入群后二次验证：机器人发验证码，成员限时回发，超时踢出 |
+| `/ja set static <内容>` | 把 `<内容>` 设为本群「需要正确回答问题」的答案 |
+| `/ja set dynamic` | 用 GitHub 仓库最新 commit 的 sha 作答案，定时刷新 |
+| `/ja off` / `/ja status` | 关闭 / 查看当前设置 |
+
+**① 入群验证码** —— 人已经进群了，验证不过就踢出去
+
+| 类型 | 验证码形式 |
+| :--- | :--- |
+| `number` | 纯数字，位数由 `join_code_digits` 决定（4 或 6，默认 6） |
+| `letter` | 固定 6 位大写英文字母 |
+| `mix` | `join_code_digits` 位数字 + 6 个字母，打乱后混排 |
+| `sha` | 指定 GitHub 仓库最新 commit 的 sha（**不公布**，成员自己去仓库查，发前 7 位即可） |
+
+```
+/ja set vc mix           启用「4/6 位数字 + 6 字母」验证码
+/ja set vc sha           机器人接着问你要哪个仓库，发链接给它
+```
+
+- 限时由 `join_verify_minutes` 决定（默认 **1** 分钟，最大 **30**），超时**直接踢出**
+- 选 `sha` 时机器人回复 `指令执行成功 目前sha值为 <sha>`，之后每 `join_sha_poll_minutes` 分钟刷新一次
+- sha 查不到时**不会踢人**（没有正确答案就踢人纯属误伤）
+- 待验证状态只在内存里，**插件重载后未完成的验证会作废**（不会踢人）
+
+**② / ③ 回答正确问题（static / dynamic）** —— 走 QQ 自带的加群审批，人根本进不来
+
+```
+/ja set static 你好      本群答案改成「你好」
+/ja set dynamic          机器人问你仓库链接，之后答案跟着最新 commit 走
+```
+
+- 两者都会先检查本群加群方式是否为「需要正确回答问题」；不是则回复询问，答 `是` 立刻改过去，答 `否` 结束并回复 `收到 :)`（`join_decline_tip` 可改）
+- 问题文本在 `join_question_text` 配置，指令里给的是**答案**
+- `dynamic` 每次执行都回复 `已将群正确密码更换为动态值 当前sha值为 <sha>`，之后按 `join_sha_poll_minutes` 自动跟新 sha
+- 改加群方式用的是 NapCat 扩展接口 `set_group_add_option`，**其他协议端可能不支持**，且机器人需为群主 / 管理员
+
+</details>
+
+<details>
 <summary><b>🎮 趣味工具</b></summary>
 
 | 指令 | 说明 |
@@ -329,6 +385,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 | `/merge <标题> <QQ> <内容> [<QQ> <内容> …]` | 构造合并聊天记录，可多组发送者 |
 | `/kill <成员> <理由>` | 赛博击杀：在与该成员的共同群同步播报，提醒管理处理 |
 | `/slimefinder <版本> <种子>`（`/sf`） | Minecraft 史莱姆区块查找 |
+| `/update on\|off` | 本群是否接收插件更新提示，**默认开** |
 | `/zmhelp`（`/群管帮助`） | 全部指令总览。群内以合并转发发送，卡片标题即 `ZM-QQGroupmgr v<版本号>`；菜单内容可在后台 `help_menu_text` 自定义 |
 
 ```
@@ -338,6 +395,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 ```
 
 > `/kill` 播报文案在后台 `kill_template` 配置，占位符 `{at}` `{target}` `{name}` `{reason}` `{operator}` `{group_id}`。
+> `/update`：插件每 `update_check_days` 天（默认 5，最大 30）查一次 GitHub 最新 release，发现新版本就在开着的群里发一张合并转发卡片（标题 `ZM_QQGroupmgr New-Update-Available!!!`）。同一个版本只提示一次。
 
 </details>
 
@@ -371,6 +429,8 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 | 📁 文件服务 | `file_server_enabled` `file_host` `file_port` `file_base_url` `file_default_ttl` `file_download_cooldown` `file_cooldown_tip` `file_private_only_tip` `file_link_expired_tip` |
 | ☠️ 赛博击杀 | `kill_template` `kill_notify_all_groups` |
 | 🖼️ 图片交互 | `media_wait_timeout`（等待补发图片/答复秒数，默认 60）`avatar_recall` `broadcast_recall` `farewell_recall`（均默认开启） |
+| 🚪 进群审批 | `join_verify_minutes` `join_code_digits` `join_sha_poll_minutes` `join_question_text` `join_verify_tip` `join_sha_tip` `join_pass_tip` `join_timeout_tip` `join_decline_tip` |
+| 🔔 更新通知 | `update_check_days` `update_tip` |
 | 📜 帮助菜单 | `help_menu_text` —— 留空用内置完整菜单；填写后 `/zmhelp` 只显示你写的内容，支持 `{name}` `{version}` `{cooldown}` 三个占位符 |
 
 ### 🔐 下载服务安全提醒
@@ -419,9 +479,20 @@ QQ 侧限制：群专属头衔通常**只有群主**能设置，机器人只是�
 </details>
 
 <details>
-<summary><b>数据会丢吗？</b></summary>
+<summary><b>数据会丢吗？升级插件要重新配一遍吗？</b></summary>
 
-封禁列表、各类文本与开关**永久保存，重启不丢**。只有用于批量撤回的消息历史是内存缓存（每群 100 条），重启清空。
+**不用。** 所有运行数据都存在插件目录之外的 `data/plugin_data/ZM-QQGroupmgr/`（封禁列表、各类文本、开关、自定义敏感词、文件仓库、更新日志），后台面板里的配置项由 AstrBot 存在 `data/config/` 下。覆盖安装、插件市场更新、`git pull` 都不会碰这两处，升级后原样继续用。
+
+额外保险：插件检测到版本号变化时，会先把数据目录里的 `*.json` 快照到 `data/plugin_data/ZM-QQGroupmgr/backups/<旧版本>-<时间戳>/`。真遇到新版本写坏老数据，把这个目录里的文件拷回上一层即可。
+
+只有两处是内存态、重启会清空：批量撤回用的消息历史（每群 100 条）、进群验证的待验证名单（重载后作废，不会误踢人）。
+
+</details>
+
+<details>
+<summary><b>禁言 9999 天报 `retcode 1200`？</b></summary>
+
+那是旧版本的问题：QQ 的 `set_group_ban` 单次上限 30 天，插件把超长时长原样传给了协议端。1.0.6 起改为分段下发 + 自动续期，上限 3650 天。注意续期依赖插件运行，长时间停用期间不会续。
 
 </details>
 
@@ -441,7 +512,7 @@ QQ 侧限制：群专属头衔通常**只有群主**能设置，机器人只是�
 
 ## 🔗 相关链接
 
-[AstrBot 官网](https://astrbot.app) · [开发文档](https://docs.astrbot.app) · [插件市场](https://cloud.astrbot.app/market) · [更新日志](CHANGELOG.md) · [提交 Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/issues)
+[AstrBot 官网](https://astrbot.app) · [开发文档](https://docs.astrbot.app) · [插件市场](https://cloud.astrbot.app/market) · [更新日志](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/blob/main/CHANGELOG.md) · [提交 Issue](https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr/issues)
 
 ## 📄 开源协议
 

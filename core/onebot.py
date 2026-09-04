@@ -24,9 +24,10 @@ def get_client(event):
 class OneBotApi:
     """把常用群管理动作包装成方法，统一异常与日志。"""
 
-    def __init__(self, event):
+    def __init__(self, event=None, client=None):
         self.event = event
-        self.client = get_client(event)
+        # 后台任务（禁言续期、版本检查）手里没有 event，直接拿适配器的 client
+        self.client = client if client is not None else get_client(event)
 
     @property
     def available(self) -> bool:
@@ -115,6 +116,46 @@ class OneBotApi:
             if isinstance(messages, list) and messages:
                 return messages
         return []
+
+    async def group_detail(self, group_id: int) -> Dict[str, Any]:
+        """取群详细信息（含加群方式 addOption），协议端不支持时返回空 dict。"""
+        result = await self.try_call("get_group_detail_info", group_id=str(group_id))
+        return result if isinstance(result, dict) else {}
+
+    async def group_add_option(self, group_id: int) -> Optional[int]:
+        """当前加群方式：4 = 需要正确回答问题，查不到返回 None。
+
+        字段名各版本不一致（NapCat 直接透传 NTQQ 的 addOption），都试一遍。
+        """
+        detail = await self.group_detail(group_id)
+        for key in ("addOption", "add_option", "add_type", "groupAddOption"):
+            value = detail.get(key)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    async def set_group_add_option(
+        self, group_id: int, add_type: int, question: str = "", answer: str = ""
+    ) -> Tuple[bool, str]:
+        """设置加群方式，返回 ``(是否成功, 失败原因)``。
+
+        ``add_type=4`` 即「需要正确回答问题」，此时 question / answer 必填。
+        这是 NapCat 的扩展接口，其他协议端可能不支持。
+        """
+        try:
+            await self.call(
+                "set_group_add_option",
+                group_id=str(group_id),
+                add_type=int(add_type),
+                group_question=question,
+                group_answer=answer,
+            )
+            return True, ""
+        except RuntimeError as exc:
+            return False, str(exc)
 
     async def set_admin(self, group_id: int, user_id: int, enable: bool) -> None:
         await self.call(

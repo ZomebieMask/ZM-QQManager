@@ -18,7 +18,15 @@ _FOREVER = {"0", "永久", "forever", "perm", "permanent", "无限", "always"}
 
 _SEGMENT_RE = re.compile(r"(\d+)\s*([A-Za-z一-鿿]*)")
 
-MAX_DURATION = 365 * 86400
+# 单次禁言允许的最长时间：3650 天。QQ 自己只接受 30 天以内的 set_group_ban，
+# 更长的时长由插件分段续期实现（见 MuteTracker.due_for_renew）。
+MAX_DURATION = 3650 * 86400
+
+# QQ 侧 set_group_ban 的上限，超过就返回 retcode 1200
+MUTE_CHUNK = 30 * 86400
+
+# 提前多久续期：留出余量，避免轮询间隔正好错过导致成员短暂解禁
+RENEW_LEAD = 600
 
 
 def parse_duration(text: str, default_unit: str = "m") -> Optional[int]:

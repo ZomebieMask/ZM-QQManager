@@ -167,6 +167,67 @@
     "type": "string",
     "default": "{at} 消息被判定为广告（评分 {score}），已撤回并禁言 {duration}"
   },
+  "join_verify_minutes": {
+    "description": "入群验证的限时（分钟）",
+    "hint": "/ja set verification_code 后，新成员需在该时间内发出验证码，超时自动踢出。默认 1 分钟，最大 30",
+    "type": "int",
+    "default": 1
+  },
+  "join_code_digits": {
+    "description": "验证码里的数字位数",
+    "hint": "对 number 与 mix 生效；letter 固定 6 位英文字母，mix 为该位数的数字再加 6 个字母",
+    "type": "int",
+    "default": 6
+  },
+  "join_sha_poll_minutes": {
+    "description": "GitHub commit sha 的查询间隔（分钟）",
+    "hint": "验证码类型 sha 与 /ja set dynamic 共用这个间隔。默认 5 分钟，最大 9999",
+    "type": "int",
+    "default": 5
+  },
+  "join_question_text": {
+    "description": "「需要正确回答问题」时展示给申请人的问题",
+    "hint": "/ja set static、/ja set dynamic 设置的内容是答案，这里是问题本身",
+    "type": "string",
+    "default": "请输入管理员提供的验证内容"
+  },
+  "join_verify_tip": {
+    "description": "入群验证码提示语，占位符：{at} {code} {minutes} {user_id} {group_id}",
+    "type": "text",
+    "default": "{at} 欢迎加入！请在 {minutes} 分钟内发送验证码完成验证，否则将被移出本群\n验证码: {code}"
+  },
+  "join_sha_tip": {
+    "description": "sha 验证提示语，占位符：{at} {repo} {minutes} {user_id} {group_id}",
+    "hint": "sha 本身不会公布，成员需要自己去仓库里查",
+    "type": "text",
+    "default": "{at} 欢迎加入！请在 {minutes} 分钟内发送 {repo} 最新 commit 的 sha 值（前 7 位即可）完成验证，否则将被移出本群"
+  },
+  "join_pass_tip": {
+    "description": "验证通过提示语，占位符：{at} {name} {user_id} {group_id}",
+    "type": "string",
+    "default": "{at} 验证通过，欢迎 :)"
+  },
+  "join_timeout_tip": {
+    "description": "验证超时踢出提示语，占位符：{name} {user_id} {minutes} {group_id}",
+    "type": "string",
+    "default": "{name}（{user_id}）未在 {minutes} 分钟内完成验证，已移出本群"
+  },
+  "join_decline_tip": {
+    "description": "管理员拒绝修改加群方式时的回复",
+    "type": "string",
+    "default": "收到 :)"
+  },
+  "update_check_days": {
+    "description": "检查插件新版本的间隔（天）",
+    "hint": "查到新版本会在开启 /update on 的群里提示一次，默认 5 天，最大 30",
+    "type": "int",
+    "default": 5
+  },
+  "update_tip": {
+    "description": "更新提示内容，占位符：{version} 最新版本号",
+    "type": "text",
+    "default": "zm_qqgroupmgr插件有新的版本可更新!\nhttps://cloud.astrbot.app/plugin/ZomebieMask/astrbot_plugin_zm_qqgroupmgr"
+  },
   "media_wait_timeout": {
     "description": "两步指令等待图片 / 答复的超时时间（秒）",
     "hint": "/g pp、/bc、/bye image 提示「请发送图片」之后的等待时长，超时即指令失效。默认 60 秒",
