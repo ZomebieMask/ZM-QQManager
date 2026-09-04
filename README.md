@@ -151,7 +151,7 @@ git clone https://github.com/ZomebieMask/astrbot_plugin_zm_qqgroupmgr.git
 
 | 指令 | 说明 |
 | :--- | :--- |
-| `/mute <成员> [时长] [理由]`（`/m`） | 禁言。`<成员>` 可 @ 或填 QQ 号，不填时长默认 10 分钟；理由写在时长后面，`/mutelist` 里能看到 |
+| `/mute <成员> [时长] [理由]`（`/m`） | 禁言。`<成员>` 必须写在最前（@ 或 QQ 号，可多个），不填时长默认 10 分钟；理由写在时长后面，最长 100 字，`/mutelist` 里能看到 |
 | `/unmute <成员>`（`/um`） | 解除禁言 |
 | `/mutelist` | 本群在禁成员 + 各自剩余时长、禁言理由与操作者 |
 | `/muteall [时长\|off]` | 全体禁言，**不带参数默认永久**，`off` 解除 |

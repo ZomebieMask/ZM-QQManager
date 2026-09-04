@@ -92,6 +92,22 @@ def extract_user_ids(event) -> List[str]:
     return found
 
 
+def is_target_token(token: str) -> bool:
+    """这一段看着像不像「一个目标成员」（QQ 号 / @ 段）。
+
+    给带自由文本理由的命令用：只有开头这些段才拿去解析目标，理由里写的
+    QQ 号不该跟着一起被禁言。
+    """
+    token = (token or "").strip()
+    if not token:
+        return False
+    return bool(
+        re.fullmatch(r"\d{5,12}", token)
+        or token.startswith("@")
+        or "CQ:at" in token
+    )
+
+
 def extract_targets(event, text: str) -> List[str]:
     """综合 @ 与纯 QQ 号，解析命令里的目标成员。"""
     targets = extract_user_ids(event)

@@ -64,6 +64,7 @@ from .core.utils import (
     MUTE_CHUNK,
     escape_cq,
     extract_targets,
+    is_target_token,
     format_duration,
     parse_duration,
     parse_group_ids,
@@ -777,7 +778,13 @@ class ZMQQGroupmgr(Star):
             return
 
         raw = self._raw_after(event, "mute", "m")
-        targets = extract_targets(event, raw)
+        # 目标只从开头那几段里认：理由是自由文本，里面出现的 5-12 位数字
+        # （比如「小号 123456789 也是他」）不能被当成第二个禁言对象
+        tokens = [p for p in raw.split() if p.strip()]
+        head = []
+        while tokens and is_target_token(tokens[0]):
+            head.append(tokens.pop(0))
+        targets = extract_targets(event, " ".join(head))
         if not targets:
             yield event.plain_result(
                 "用法: /mute <成员> [时长] [理由]\n"
@@ -788,9 +795,7 @@ class ZMQQGroupmgr(Star):
         # 去掉目标后，第一段能当时长解析的就是时长，剩下的整段算理由
         duration = 600
         capped = 0
-        rest = [
-            p for p in raw.split() if p.strip() and not any(t in p for t in targets)
-        ]
+        rest = [p for p in tokens if not any(t in p for t in targets)]
         if rest:
             parsed = parse_duration(rest[0], default_unit="m")
             if parsed is not None:
@@ -798,7 +803,8 @@ class ZMQQGroupmgr(Star):
                 if parsed > MAX_DURATION:
                     capped = parsed
                 rest = rest[1:]
-        reason = " ".join(rest).strip() or DEFAULT_MUTE_REASON
+        # 理由会落进 settings.json，截断一下，别让人把一整篇聊天记录存进来
+        reason = truncate(" ".join(rest), 100) or DEFAULT_MUTE_REASON
 
         succeeded, failed = [], []
         for user_id in targets:
@@ -1250,6 +1256,10 @@ class ZMQQGroupmgr(Star):
         repo = ""
         if code_type == CODE_SHA:
             repo = str(state.get("repo") or "")
+            if not repo:
+                # 没仓库就永远没有正确答案，这是配置坏了，不能拿新成员撒气
+                logger.warning(f"[ZM-QQGroupmgr] 群 {group_id} 选了 sha 却没有仓库，跳过验证")
+                return
             code, error = await self._sha_cache.latest(repo, ttl=self._poll_minutes() * 60)
             if not code:
                 # 取不到也照常挂验证：成员发来的 sha 会当场再问一次 GitHub，

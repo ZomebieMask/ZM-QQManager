@@ -231,6 +231,46 @@ def test_sha_reverify(main):
     print("  sha 验证: 缓存命中 / 新 commit 复核 / 闲聊不查询 OK")
 
 
+def test_mute_args():
+    """/mute <成员> [时长] [理由] 的分段：理由里的 QQ 号不能变成禁言对象。"""
+    utils = sys.modules["zmplugin.core.utils"]
+
+    def split(raw, mentioned=()):
+        """复刻 cmd_mute 里的分段逻辑（那段在 async generator 里没法直接调）。"""
+        tokens = [p for p in raw.split() if p.strip()]
+        head = []
+        while tokens and utils.is_target_token(tokens[0]):
+            head.append(tokens.pop(0))
+        targets = list(mentioned)
+        for number in __import__("re").findall(r"\b(\d{5,12})\b", " ".join(head)):
+            if number not in targets:
+                targets.append(number)
+        duration = 600
+        rest = [p for p in tokens if not any(t in p for t in targets)]
+        if rest and utils.parse_duration(rest[0], default_unit="m") is not None:
+            duration = utils.parse_duration(rest[0], default_unit="m")
+            rest = rest[1:]
+        return targets, duration, " ".join(rest)
+
+    assert split("123456789") == (["123456789"], 600, "")
+    assert split("123456789 1h") == (["123456789"], 3600, "")
+    assert split("123456789 1h 发广告") == (["123456789"], 3600, "发广告")
+    assert split("123456789 发广告") == (["123456789"], 600, "发广告"), "不填时长也要能写理由"
+    assert split("123456789 987654321 10m 刷屏") == (
+        ["123456789", "987654321"], 600, "刷屏",
+    ), "多目标"
+    # 理由里的 QQ 号只是被提到，不该跟着一起挨禁言
+    targets, duration, reason = split("123456789 1h 小号 987654321 也是他")
+    assert targets == ["123456789"], targets
+    assert reason == "小号 987654321 也是他", reason
+    # @ 的目标来自消息段，正文里只剩时长和理由
+    assert split("1h 骂人", mentioned=["111222"]) == (["111222"], 3600, "骂人")
+    # 带单位的理由不会被误当成时长（整段必须是数字+单位才算）
+    assert split("123456789 3次违规")[1] == 600
+
+    print("  /mute 参数: 时长 / 理由 / 多目标 / 理由里的 QQ 号不误伤 OK")
+
+
 def test_long_mute():
     """超过 30 天的禁言要分段下发并按时续期。"""
     import asyncio
@@ -304,5 +344,6 @@ if __name__ == "__main__":
     test_data_dir_migration()
     test_join_approval()
     test_sha_reverify(main)
+    test_mute_args()
     test_long_mute()
     print(f"全部自检通过 —— {main.PLUGIN_NAME} v{main.PLUGIN_VERSION}")
